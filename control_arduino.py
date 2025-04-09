@@ -19,12 +19,12 @@ class control_arduino:
         self.teaprature_history = []
 
         try:
-            self.arduino = serial.Serial(com_port, baudrate, timeout=100) # 設定 timeout
+            self.arduino = serial.Serial(com_port, baudrate, timeout=100)
             self.arduino.reset_input_buffer()
             print("Connected")
             self.running = True
-            self.read_thread = threading.Thread(target=self._read_serial, daemon=True) # 建立讀取線程
-            self.read_thread.start() # 啟動線程
+            self.read_thread = threading.Thread(target=self._read_serial, daemon=True)
+            self.read_thread.start()
             print("Serial reading thread started.")
         except serial.SerialException as e:
             print(f"Serial exception: {e}")
@@ -99,7 +99,7 @@ class control_arduino:
             pwm_value = int(control_pwm_value)
             pwm_value = max(0, min(pwm_value, 255)) 
             command = f"PWM:{pwm_value}\n"
-            self.arduino.write(command.encode("utf-8")) # send the command to arduino
+            self.arduino.write(command.encode("utf-8"))
 
             with self.lock:
                 temp_1_return = self.latest_temp_1
