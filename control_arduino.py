@@ -15,6 +15,7 @@ class control_arduino:
         self.lock = threading.Lock() 
         self.running = False # 
 
+        self.max_tempature_history_length = 100 # 記錄的長度
         self.teaprature_history = []
 
         try:
@@ -72,7 +73,7 @@ class control_arduino:
         print("Serial reading thread finished.")
     
     def _append_tempature_history(self, tempature):
-        if len(self.teaprature_history) >= 100:
+        if len(self.teaprature_history) >= self.max_tempature_history_length:
             self.teaprature_history.pop(0)
         self.teaprature_history.append(tempature)
         
