@@ -15,7 +15,9 @@ class control_arduino:
         self.lock = threading.Lock() 
         self.running = False # 
 
-        self.max_tempature_history_length = 100 # 記錄的長度
+        self.logging_time_start = time.time()
+
+        self.max_tempature_history_length = 1000 # 記錄的長度
         self.teaprature_history = []
 
         try:
@@ -73,12 +75,18 @@ class control_arduino:
         print("Serial reading thread finished.")
     
     def _append_tempature_history(self, tempature):
+        if len(self.teaprature_history) == 0:
+            self.logging_time_start = time.time()
+            return
         if len(self.teaprature_history) >= self.max_tempature_history_length:
             self.teaprature_history.pop(0)
-        self.teaprature_history.append(tempature)
+        logging_time = time.time() - self.logging_time_start
+        logging_data =  np.array([logging_time, tempature[0], tempature[1]])    
+        self.teaprature_history.append(logging_data)
         
     def return_tempature_history(self):
         if len(self.teaprature_history) == 0:
+
             print("No tempature history")
             return np.array([-1.0, -1.0])
         else:
@@ -144,6 +152,7 @@ class control_arduino:
         
     def close(self):
         self.running = False 
+        self.arduino.control_arduino(0)
         if hasattr(self, 'read_thread') and self.read_thread.is_alive():
              self.read_thread.join(timeout=1.0) 
         if self.arduino and self.arduino.is_open:
