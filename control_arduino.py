@@ -12,6 +12,8 @@ class control_arduino:
     def __init__(self, com_port, baudrate):
         self.latest_temp_1 = -1.0 
         self.latest_temp_2 = -1.0
+        self.latest_temp_3 = -1.0
+
         self.lock = threading.Lock() 
         self.running = False # 
 
@@ -44,22 +46,25 @@ class control_arduino:
                             parts = line.split(':')
                             if len(parts) == 2 and "," in parts[1]:
                                 temp_parts = parts[1].split(',')
-                                if len(temp_parts) == 2:
+                                if len(temp_parts) == 3:
                                     try:
                                         temp1 = float(temp_parts[0].strip())
                                         temp2 = float(temp_parts[1].strip())
+                                        temp3 = float(temp_parts[2].strip())
                                         with self.lock:
                                             self.latest_temp_1 = temp1
                                             self.latest_temp_2 = temp2
-                                            self._append_tempature_history(np.array([temp1, temp2]))
+                                            self.latest_temp_3 = temp3
+                                            self._append_tempature_history(np.array([temp1, temp2, temp3]))
                                             
                                     except ValueError:
                                         print(f"ValueError parsing temps: {parts[1]}") 
                                         pass 
                                 elif "ERROR" in parts[1]:
-                                     with self.lock: #
-                                         self.latest_temp_1 = -1
-                                         self.latest_temp_2 = -1
+                                     with self.lock: 
+                                        self.latest_temp_1 = -1
+                                        self.latest_temp_2 = -1
+                                        self.latest_temp_3 = -1
                                      print("Received TEMP:ERROR") 
                     except UnicodeDecodeError:
                         print("UnicodeDecodeError, skipping line.")
@@ -74,20 +79,20 @@ class control_arduino:
 
         print("Serial reading thread finished.")
     
-    def _append_tempature_history(self, tempature):
+    def _append_tempature_history(self, temp):
         if len(self.teaprature_history) == 0:
             self.logging_time_start = time.time()
         if len(self.teaprature_history) >= self.max_tempature_history_length:
             self.teaprature_history.pop(0)
         logging_time = time.time() - self.logging_time_start
-        logging_data =  np.array([logging_time, tempature[0], tempature[1]])    
+        logging_data =  np.array([logging_time, temp[0], temp[1], temp[2]])    
         self.teaprature_history.append(logging_data)
         
     def return_tempature_history(self):
         if len(self.teaprature_history) == 0:
 
             print("No tempature history")
-            return np.array([-1.0, -1.0])
+            return np.array([-1.0, -1.0, -1.0])
         else:
             return np.array(self.teaprature_history)
     
@@ -111,15 +116,16 @@ class control_arduino:
             with self.lock:
                 temp_1_return = self.latest_temp_1
                 temp_2_return = self.latest_temp_2
-            return np.array([temp_1_return, temp_2_return])
+                temp_3_return = self.latest_temp_3
+            return np.array([temp_1_return, temp_2_return, temp_3_return])
         
         except serial.SerialException as e:
             print(f"Serial write error: {e}")
             self.running = False
-            return np.array([-1.0, -1.0])
+            return np.array([-1.0, -1.0, -1.0])
         except Exception as e:
             print(f"Error sending PWM: {e}")
-            return np.array([-1.0, -1.0])
+            return np.array([-1.0, -1.0, -1.0])
 
     def return_tempure(self):
         '''
@@ -128,11 +134,12 @@ class control_arduino:
         '''
         if not self.running:
              print("Arduino not connected or thread stopped.")
-             return np.array([-1.0, -1.0])
+             return np.array([-1.0, -1.0, -1.0])
 
         with self.lock:
             current_temp_1 = self.latest_temp_1
             current_temp_2 = self.latest_temp_2
+            current_temp_3 = self.latest_temp_3
         return np.array([current_temp_1, current_temp_2])
            
     def control_arduino(self,  control_pwm_value):
