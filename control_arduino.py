@@ -77,7 +77,6 @@ class control_arduino:
     def _append_tempature_history(self, tempature):
         if len(self.teaprature_history) == 0:
             self.logging_time_start = time.time()
-            return
         if len(self.teaprature_history) >= self.max_tempature_history_length:
             self.teaprature_history.pop(0)
         logging_time = time.time() - self.logging_time_start
@@ -152,7 +151,8 @@ class control_arduino:
         
     def close(self):
         self.running = False 
-        self.arduino.control_arduino(0)
+        if self.arduino:
+            self.control_arduino(0)
         if hasattr(self, 'read_thread') and self.read_thread.is_alive():
              self.read_thread.join(timeout=1.0) 
         if self.arduino and self.arduino.is_open:
