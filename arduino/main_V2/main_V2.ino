@@ -127,11 +127,10 @@ void loop()
     double read_voltage = analogRead(PIN_Voltage);
     double read_current = analogRead(PIN_Current);
 
-    double voltage = (read_voltage * 5.0) / 1023.0 * 5;
-    double current = (read_current * 5.0) / 1023.0;
+    double voltage = read_voltage * (4.9 / 1023.0) * 5 ;
+    double current = read_current * (4.9 / 1023.0);
 
-    voltage = round(voltage * 1000) / 1000;
-    current = round(current * 1000) / 1000;
+    double mos_resisor = 0.0095 * current * current - 
 
     if (!isnan(temperature_1) && !isnan(temperature_2) && !isnan(temperature_3) && !isnan(temperature_4) && !isnan(temperature_5))
     { // 確保 MCP9600 讀取成功

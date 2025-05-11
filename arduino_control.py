@@ -56,16 +56,16 @@ class control_arduino:
                         if line.startswith("DATA:"):
                             parts = line.split(':')
                             if len(parts) == 2 and "," in parts[1]:
-                                temp_parts = parts[1].split(',')
-                                if len(temp_parts) == 3:
+                                data_parts = parts[1].split(',')
+                                if len(data_parts) == 7:
                                     try:
-                                        temp1 = float(temp_parts[0].strip())
-                                        temp2 = float(temp_parts[1].strip())
-                                        temp3 = float(temp_parts[2].strip())
-                                        temp4 = float(temp_parts[3].strip())
-                                        temp5 = float(temp_parts[4].strip())
-                                        voltage = float(temp_parts[5].strip())
-                                        current = float(temp_parts[6].strip())
+                                        temp1 = float(data_parts[0].strip())
+                                        temp2 = float(data_parts[1].strip())
+                                        temp3 = float(data_parts[2].strip())
+                                        temp4 = float(data_parts[3].strip())
+                                        temp5 = float(data_parts[4].strip())
+                                        voltage = float(data_parts[5].strip())
+                                        current = float(data_parts[6].strip())
 
                                         with self.lock:
                                             self.latest_temp_1 = temp1
@@ -228,30 +228,35 @@ if __name__ == "__main__":
     '''
     only for test the control_arduino class
     '''
-    arduino = control_arduino("COM7", 9600)
+    arduino = control_arduino("COM3", 9600)
 
     time.sleep(1)
 
-    for i in range(100):
+    for i in range(1000):
         # print(time.time())
-        print(arduino.control_arduino_and_return_data(255))
-        print(arduino.return_tempure())
+        print(arduino.control_arduino_and_return_data(155))
+        # print(arduino.return_tempure())
+        # print(arduino.return_voltage_and_current())
         time.sleep(0.1)
 
-    temp = arduino.return_data_history()
+    data = arduino.return_data_history()
     # print(temp)
 
     arduino.close()
     print("End of program")
     print("Arduino closed")
 
-    t = temp[:, 0]
-    Ttest = temp[:, 1]
-    TH = temp[:, 2]
-    TM = temp[:, 3]
-# %%
+    t = data[:, 0]
+    Ttest = data[:, 1]
+    TH = data[:, 2]
+    TM_1 = data[:, 3]
+    TM_2 = data[:, 4]
+    TM_3 = data[:, 5]
+
     plt.figure(figsize=(8, 5))
-    plt.plot(t, TM, 'b.',label='TM')
+    plt.plot(t, TM_1, 'b.',label='TM')
+    plt.plot(t, TM_2, 'y.',label='TM')
+    plt.plot(t, TM_3, 'g.',label='TM')
     plt.plot(t, TH, 'r.',label='TH')
     plt.plot(t, Ttest, 'g.',label='Ttest')
     plt.xlim(0,300)
@@ -264,10 +269,9 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
     
-
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     filename = f"data/output_{timestamp}.csv"
-    np.savetxt(filename, temp, delimiter=",",header="Time,Ttest,TH,TM", comments="", fmt="%.5f")
+    np.savetxt(filename, data, delimiter=",",header="Time,Ttest,TH,TM", comments="", fmt="%.5f")
     print(f"Data saved to {filename}")
     
 
