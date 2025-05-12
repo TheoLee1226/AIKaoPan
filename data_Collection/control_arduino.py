@@ -27,9 +27,10 @@ class control_arduino:
         self.data_history = []
 
         try:
+            print("Trying to connect arduino")
             self.arduino = serial.Serial(com_port, baudrate, timeout=100)
             self.arduino.reset_input_buffer()
-            print("Connected")
+            print("Connected arduino")
             self.running = True
             self.read_thread = threading.Thread(target=self._read_serial, daemon=True)
             self.read_thread.start()
@@ -197,15 +198,14 @@ class control_arduino:
             print(f"An unexpected error occurred while sending PWM: {e}")
         
     def close(self):
+        self.control_arduino(0)
         self.running = False 
-        if self.arduino:
-            self.control_arduino(0)
         if hasattr(self, 'read_thread') and self.read_thread.is_alive():
              self.read_thread.join(timeout=1.0) 
         if self.arduino and self.arduino.is_open:
             try:
                 self.arduino.close()
-                print("Disconnected")
+                print("Disconnected arduino")
             except Exception as e:
                 print(f"Error closing serial port: {e}")
         self.arduino = None

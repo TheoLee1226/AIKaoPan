@@ -10,8 +10,9 @@ voltage_meter.set_voltage_mode()
 
 time.sleep(1)
 
-#current_meter = cm.control_meter()
-#current_meter.connect("ASRL12::INSTR")
+current_meter = cm.control_meter()
+current_meter.connect("ASRL4::INSTR")
+current_meter.set_current_mode()
 
 time.sleep(1)
 
@@ -22,24 +23,30 @@ time.sleep(5)
 data = []
 
 start_time = time.time()
+collection_time = 10
 
-for i in range(10):
+print("Starting data collection...")
+while(time.time() - start_time < collection_time):
     current_time = time.time()
-    arduino.control_arduino(155)
+    arduino.control_arduino(200)
     voltage = voltage_meter.read_voltage()
-    #current = current_meter.read_current()
+    current = current_meter.read_current()
     temperature = arduino.return_temperature()
-    data.append([current_time - start_time ,voltage[0], temperature[0], temperature[1], temperature[2], temperature[3], temperature[4]])
-    #data.append([current_time - start_time,voltage[0], voltage[1], current[0], current[1], temperature[0], temperature[1], temperature[2], temperature[3], temperature[4]])
-    print(f"Time: {current_time - start_time:.2f} s, Voltage: {voltage}, Temperature: {temperature}")
+    data.append([current_time - start_time,voltage[0], current[0], temperature[0], temperature[1], temperature[2], temperature[3], temperature[4]])
+    print(f"Time: {current_time - start_time:.2f} s, Voltage: [{voltage[0]:.3f}], Current: [{current[0]:.3f}], Temperature: {temperature}")
     time.sleep(0.01)
+print("Data collection finished.")
 
+print("Closing connections...")
 voltage_meter.close()
-#current_meter.close()
+current_meter.close()
 arduino.close()
 
+
+steak = "ribeye"
+power = voltage[0] * current[0]
 timestamp = time.strftime("%Y%m%d_%H%M%S")
-filename = f"data_Collection\data\output_{timestamp}.csv"
+filename = f"data_collection\data\{steak}_{collection_time}S_{power:.2f}W_{timestamp}.csv"
 directory = os.path.dirname(filename)
 if not os.path.exists(directory):
     os.makedirs(directory)

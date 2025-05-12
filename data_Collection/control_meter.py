@@ -17,9 +17,13 @@ class control_meter:
     def close(self):
         self.instrument.close()
         self.rm.close()
+        print("Connection closed.")
 
     def set_voltage_mode(self):
         self.instrument.write("CONFigure:VOLTage:DC 50") 
+
+    def set_current_mode(self):
+        self.instrument.write("CONFigure:CURRent:DC 5")
 
     def read_voltage(self):
         measured_value_str = self.instrument.query("MEASure:VOLTage:DC? 50")
@@ -34,8 +38,7 @@ class control_meter:
         return measured_value
     
     def read_current(self):
-        self.instrument.write("FUNCtion 'CURRent:DC'")
-        measured_value_str = self.instrument.query("READ?") 
+        measured_value_str = self.instrument.query("MEASure:CURRent:DC? 5")
         measured_value_str = measured_value_str.strip()
         measured_value_str = measured_value_str.split(",")
         measured_value = []
@@ -48,11 +51,11 @@ class control_meter:
     
 if __name__ == "__main__":
     meter = control_meter()
-    meter.connect("ASRL11::INSTR")
-    meter.set_voltage_mode()
-    print(meter.read_voltage())
-    print(meter.read_voltage())
-    print(meter.read_voltage())
+    meter.connect("ASRL4::INSTR")
+    meter.set_current_mode()
+    for i in range(10):
+        current = meter.read_current()
+        print(f"Current: {current}")
     meter.close()
 
     
