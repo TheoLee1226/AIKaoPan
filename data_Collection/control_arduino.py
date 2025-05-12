@@ -148,7 +148,7 @@ class control_arduino:
             print(f"Error sending PWM: {e}")
             return np.array([-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0])
 
-    def return_tempure(self):
+    def return_temperature(self):
         '''
         only return the tempature of the sensor
         return type: np.array([current_temp_1, current_temp_2, current_temp_3, current_temp_4, current_temp_5])
@@ -179,19 +179,22 @@ class control_arduino:
         return np.array([current_voltage, current_current])
     
            
-    def control_arduino(self,  control_pwm_value):
+    def control_arduino(self, control_pwm_value):
         '''
         control the arduino by setting the pwm value
         '''
         if not self.arduino or not self.running:
-
-            try:
-                pwm_value = int(control_pwm_value)
-                pwm_value = max(0, min(pwm_value, 255)) 
-                command = f"PWM:{pwm_value}\n"
-                self.arduino.write(command.encode("utf-8"))
-            except serial.SerialException as e:
-                print(f"Serial write error: {e}")
+            print("Arduino not connected or not running. Cannot send PWM command.")
+            return
+        try:
+            pwm_value = int(control_pwm_value)
+            pwm_value = max(0, min(pwm_value, 255))
+            command = f"PWM:{pwm_value}\n"
+            self.arduino.write(command.encode("utf-8"))
+        except serial.SerialException as e:
+            print(f"Serial write error: {e}")
+        except Exception as e:
+            print(f"An unexpected error occurred while sending PWM: {e}")
         
     def close(self):
         self.running = False 
@@ -225,47 +228,11 @@ if __name__ == "__main__":
 
     time.sleep(1)
 
-    for i in range(1000):
-        # print(time.time())
-        print(arduino.control_arduino_and_return_data(155))
-        # print(arduino.return_tempure())
-        # print(arduino.return_voltage_and_current())
+    for i in range(100):
+        #arduino.control_arduino_and_return_data(155)
+        arduino.control_arduino(155)
+        print(arduino.return_temperature())
         time.sleep(0.1)
 
-    data = arduino.return_data_history()
-    # print(temp)
-
-    arduino.close()
-    print("End of program")
-    print("Arduino closed")
-
-    t = data[:, 0]
-    Ttest = data[:, 1]
-    TH = data[:, 2]
-    TM_1 = data[:, 3]
-    TM_2 = data[:, 4]
-    TM_3 = data[:, 5]
-
-    plt.figure(figsize=(8, 5))
-    plt.plot(t, TM_1, 'b.',label='TM')
-    plt.plot(t, TM_2, 'y.',label='TM')
-    plt.plot(t, TM_3, 'g.',label='TM')
-    plt.plot(t, TH, 'r.',label='TH')
-    plt.plot(t, Ttest, 'g.',label='Ttest')
-    plt.xlim(0,300)
-    plt.ylim(15,400)
-    plt.xlabel('Time')
-    plt.ylabel('Temperature')
-    plt.title('TM and TH over Time')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-    
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"data/output_{timestamp}.csv"
-    np.savetxt(filename, data, delimiter=",",header="Time,Ttest,TH,TM", comments="", fmt="%.5f")
-    print(f"Data saved to {filename}")
-    
 
 

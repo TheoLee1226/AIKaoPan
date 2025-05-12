@@ -99,6 +99,7 @@ void loop()
 
     if (input.startsWith("PWM:"))
     {
+
       int pwmValue = input.substring(4).toInt();
       pwmValue = constrain(pwmValue, 0, 255);
       analogWrite(PIN_MOS1_GATE, pwmValue);
@@ -113,8 +114,7 @@ void loop()
   }
 
   unsigned long currentMillis = millis();
-  // if (currentMillis - lastTempRead >= TEMP_INTERVAL)
-  while (1)
+  if (currentMillis - lastTempRead >= TEMP_INTERVAL)
   {
     lastTempRead = currentMillis;
 
@@ -129,8 +129,6 @@ void loop()
 
     double voltage = read_voltage * (4.9 / 1023.0) * 5 ;
     double current = read_current * (4.9 / 1023.0);
-
-    double mos_resisor = 0.0095 * current * current - 
 
     if (!isnan(temperature_1) && !isnan(temperature_2) && !isnan(temperature_3) && !isnan(temperature_4) && !isnan(temperature_5))
     { // 確保 MCP9600 讀取成功
