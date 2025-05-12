@@ -28,7 +28,7 @@ class control_arduino:
 
         try:
             print("Trying to connect arduino")
-            self.arduino = serial.Serial(com_port, baudrate, timeout=100)
+            self.arduino = serial.Serial(com_port, baudrate, timeout=1) # 縮短讀取超時
             self.arduino.reset_input_buffer()
             print("Connected arduino")
             self.running = True
@@ -233,6 +233,3 @@ if __name__ == "__main__":
         arduino.control_arduino(155)
         print(arduino.return_temperature())
         time.sleep(0.1)
-
-
-

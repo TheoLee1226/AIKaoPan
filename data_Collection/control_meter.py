@@ -9,15 +9,29 @@ class control_meter:
     def connect(self, resource_string):
         print(f"Attempting to connect to: {resource_string}")
         self.instrument = self.rm.open_resource(resource_string)
-        self.instrument.timeout = 30000
+        self.instrument.timeout = 5000
         print(f"Connected to: {self.instrument.query('*IDN?')}")
         self.instrument.clear()
         
 
     def close(self):
-        self.instrument.close()
-        self.rm.close()
-        print("Connection closed.")
+        try:
+            if hasattr(self, 'instrument') and self.instrument:
+                self.instrument.close()
+        except Exception as e:
+            print(f"Error closing VISA instrument: {e}")
+        finally:
+            self.instrument = None # Ensure it's cleared
+
+        try:
+            if hasattr(self, 'rm') and self.rm:
+                self.rm.close()
+        except Exception as e:
+            print(f"Error closing VISA resource manager: {e}")
+        finally:
+            self.rm = None # Ensure it's cleared
+        print("Connection closed (control_meter).")
+
 
     def set_voltage_mode(self):
         self.instrument.write("CONFigure:VOLTage:DC 50") 
