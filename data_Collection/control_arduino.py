@@ -4,8 +4,12 @@ import numpy as np
 import threading
 import matplotlib.pyplot as plt
 """
+Serial Communication Protocol:
 PC =======[PWM:{pwm value}]=======> Arduino
-PC <=[TEMP:{tempature of sensor}]== Arduino
+PC <=[DATA:{temp1},{temp2},{temp3},{temp4},{temp5},{voltage},{current}]== Arduino (e.g., "DATA:25.1,25.2,25.3,25.4,25.5,0.0,0.0\n")
+PC <=[TEMP:ERROR,{error_msg}]== Arduino (Original intent, current code handles "DATA:ERROR..." differently)
+
+Note: The current _read_serial implementation specifically looks for "DATA:" prefix.
 """
 
 class control_arduino:
@@ -19,19 +23,19 @@ class control_arduino:
         self.latest_current = -1.0
 
         self.lock = threading.Lock() 
-        self.running = False # 
+        self.running = False # Flag to control the reading thread
 
         self.logging_time_start = time.time()
 
-        self.max_data_history_length = 100000 # 記錄的長度
-        self.data_history = []
+        self.max_data_history_length = 100000 # Max length of data history to keep in this class
+        self.data_history = [] # Stores tuples of (timestamp, temp1, temp2, temp3, temp4, temp5, voltage, current)
 
         try:
-            print("Trying to connect arduino")
-            self.arduino = serial.Serial(com_port, baudrate, timeout=1) # 縮短讀取超時
+            print(f"Trying to connect to Arduino on {com_port} at {baudrate} baud.")
+            self.arduino = serial.Serial(com_port, baudrate, timeout=1) # Serial port object, 1s read timeout
             self.arduino.reset_input_buffer()
-            print("Connected arduino")
-            self.running = True
+            print("Connected to Arduino.")
+            self.running = True # Set running flag to True after successful connection
             self.read_thread = threading.Thread(target=self._read_serial, daemon=True)
             self.read_thread.start()
             print("Serial reading thread started.")
@@ -41,6 +45,10 @@ class control_arduino:
             self.running = False
     
     def _read_serial(self):
+        """
+        Reads data from the Arduino via serial communication in a separate thread.
+        Expected data format: "DATA:temp1,temp2,temp3,temp4,temp5,voltage,current\n"
+        """
         while self.running and self.arduino:
             try:
                 raw_data = self.arduino.readline()
@@ -48,6 +56,7 @@ class control_arduino:
                     try:
                         line = raw_data.decode('utf-8').strip()
                         if line.startswith("DATA:"):
+                            # Example: "DATA:25.1,25.2,25.3,25.4,25.5,0.0,0.0"
                             parts = line.split(':')
                             if len(parts) == 2 and "," in parts[1]:
                                 data_parts = parts[1].split(',')
@@ -72,7 +81,7 @@ class control_arduino:
                                             self._append_data_history(np.array([temp1, temp2, temp3, temp4, temp5, voltage, current]))
                                             
                                     except ValueError:
-                                        print(f"ValueError parsing temps: {parts[1]}") 
+                                        print(f"ValueError parsing data values: {parts[1]}") 
                                         pass 
 
                                 elif "ERROR" in parts[1]:
@@ -85,7 +94,7 @@ class control_arduino:
                                         self.latest_voltage = -1
                                         self.latest_current = -1
                                         print("Received TEMP:ERROR") 
-                    except UnicodeDecodeError:
+                    except UnicodeDecodeError: # Handle cases where data is not valid UTF-8
                         print("UnicodeDecodeError, skipping line.")
                         pass 
             except serial.SerialException as e:
@@ -99,6 +108,10 @@ class control_arduino:
         print("Serial reading thread finished.")
     
     def _append_data_history(self, data):
+        """
+        Appends a new data point to the internal data history.
+        data: A numpy array [temp1, temp2, temp3, temp4, temp5, voltage, current]
+        """
         if len(self.data_history) == 0:
             self.logging_time_start = time.time()
         if len(self.data_history) >= self.max_data_history_length:
@@ -108,6 +121,9 @@ class control_arduino:
         self.data_history.append(logging_data)
         
     def return_data_history(self):
+        """
+        Returns the entire data history collected by this class.
+        """
         if len(self.data_history) == 0:
             print("No data history")
             return np.array([-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0])
@@ -116,9 +132,9 @@ class control_arduino:
     
     def control_arduino_and_return_data(self, control_pwm_value):
         """
-        control_pwm_value: 0~255
-        will send to arduino to modify the pwm output
-        and it will return the tempature of the sensor
+        Sends a PWM command to the Arduino and returns the latest sensor data.
+        control_pwm_value: Integer between 0-255.
+        Returns a numpy array: [temp1, temp2, temp3, temp4, temp5, voltage, current]
         return type: np.array([temp_1_return, temp_2_return])
         """
         if not self.arduino or not self.running:
@@ -128,7 +144,7 @@ class control_arduino:
         try:
             pwm_value = int(control_pwm_value)
             pwm_value = max(0, min(pwm_value, 255)) 
-            command = f"PWM:{pwm_value}\n"
+            command = f"PWM:{pwm_value}\n" # Command format expected by Arduino
             self.arduino.write(command.encode("utf-8"))
 
             with self.lock:
@@ -151,8 +167,8 @@ class control_arduino:
 
     def return_temperature(self):
         '''
-        only return the tempature of the sensor
-        return type: np.array([current_temp_1, current_temp_2, current_temp_3, current_temp_4, current_temp_5])
+        Returns the latest temperature readings from the five sensors.
+        Return type: np.array([temp1, temp2, temp3, temp4, temp5])
         '''
         if not self.running:
              print("Arduino not connected or thread stopped.")
@@ -168,8 +184,8 @@ class control_arduino:
     
     def return_voltage_and_current(self):
         '''
-        only return the voltage of the sensor
-        return type: np.array([temp_value_1, temp_value_2])
+        Returns the latest voltage and current readings.
+        Return type: np.array([voltage, current])
         '''
         if not self.running:
              print("Arduino not connected or thread stopped.")
@@ -182,7 +198,8 @@ class control_arduino:
            
     def control_arduino(self, control_pwm_value):
         '''
-        control the arduino by setting the pwm value
+        Sends a PWM command to the Arduino.
+        control_pwm_value: Integer between 0-255.
         '''
         if not self.arduino or not self.running:
             print("Arduino not connected or not running. Cannot send PWM command.")
@@ -190,7 +207,7 @@ class control_arduino:
         try:
             pwm_value = int(control_pwm_value)
             pwm_value = max(0, min(pwm_value, 255))
-            command = f"PWM:{pwm_value}\n"
+            command = f"PWM:{pwm_value}\n" # Command format expected by Arduino
             self.arduino.write(command.encode("utf-8"))
         except serial.SerialException as e:
             print(f"Serial write error: {e}")
@@ -198,8 +215,13 @@ class control_arduino:
             print(f"An unexpected error occurred while sending PWM: {e}")
         
     def close(self):
-        self.control_arduino(0)
-        self.running = False 
+        """
+        Closes the serial connection to the Arduino and stops the reading thread.
+        Sets PWM to 0 before closing.
+        """
+        if self.arduino and self.running: # Send PWM 0 only if connected and was running
+            self.control_arduino(0) # Safety: turn off PWM
+        self.running = False # Signal the read thread to stop
         if hasattr(self, 'read_thread') and self.read_thread.is_alive():
              self.read_thread.join(timeout=1.0) 
         if self.arduino and self.arduino.is_open:
@@ -211,6 +233,9 @@ class control_arduino:
         self.arduino = None
 
     def reset(self):
+        """
+        Resets the Arduino's input buffer.
+        """
         if self.arduino and self.arduino.is_open:
              try:
                  self.arduino.reset_input_buffer()
@@ -222,7 +247,7 @@ class control_arduino:
             
 if __name__ == "__main__":
     '''
-    only for test the control_arduino class
+    Example usage for testing the control_arduino class.
     '''
     arduino = control_arduino("COM3", 9600)
 

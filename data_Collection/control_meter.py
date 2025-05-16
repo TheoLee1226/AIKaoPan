@@ -48,7 +48,7 @@ class control_meter:
             try:
                 measured_value.append(float(value_str))
             except ValueError as e:
-                print(f"無法轉換 '{value_str}': {e}") 
+                print(f"Could not convert to float '{value_str}': {e}") 
         return measured_value
     
     def read_current(self):
@@ -60,7 +60,7 @@ class control_meter:
             try:
                 measured_value.append(float(value_str))
             except ValueError as e:
-                print(f"無法轉換 '{value_str}': {e}") 
+                print(f"Could not convert to float '{value_str}': {e}") 
         return measured_value
     
 if __name__ == "__main__":
