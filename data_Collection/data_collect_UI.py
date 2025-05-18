@@ -124,10 +124,11 @@ class DataCollectionUI:
     DEFAULT_POWER_PID_KI = 0.3     # Slightly reduced Ki
     DEFAULT_POWER_PID_KD = 0.1     # Significantly increased Kd to counteract undershoot
     DEFAULT_R_REF = 1.0 # Default reference resistance if file not loaded
-    NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM = 24.0 # Assumed V_out at PWM=255. Adjust as needed.    
-    DEFAULT_EQ_PARAM_A = 22.0 # Example: R0 for R(T) = A * exp(B*T)
-    DEFAULT_EQ_PARAM_B = 0.0039 # Example: temperature coefficient for copper/nichrome like
+    NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM = 31.5 # Assumed V_out at PWM=255. Adjust as needed.    
+    DEFAULT_EQ_PARAM_A = 14.5341 # Example: R0 for R(T) = A * exp(B*T)
+    DEFAULT_EQ_PARAM_B = 0.001999 # Example: temperature coefficient for copper/nichrome like
     DEFAULT_EQ_PARAM_C = 0.0 # Example: Constant offset for R(T) = A * exp(B*T) + C
+    DEFAULT_RDS_ON = 0.05 # Default MOSFET Rds(on) in Ohms
     DEFAULT_CORRECTED_POWER_TARGET = 20.0 # Default target power for Corrected Power mode
     def __init__(self, master):
         self.master = master
@@ -172,6 +173,7 @@ class DataCollectionUI:
         self.equation_param_A_var = tk.DoubleVar(value=self.DEFAULT_EQ_PARAM_A)
         self.equation_param_B_var = tk.DoubleVar(value=self.DEFAULT_EQ_PARAM_B)
         self.equation_param_C_var = tk.DoubleVar(value=self.DEFAULT_EQ_PARAM_C)
+        self.rds_on_var = tk.DoubleVar(value=self.DEFAULT_RDS_ON) # New: MOSFET Rds(on)
         self.corrected_power_target_var = tk.DoubleVar(value=self.DEFAULT_CORRECTED_POWER_TARGET)
         # UI Variables (Tkinter variables) for PID and other settings
         self.pid_sensor_var = tk.StringVar(value="TM_1") # Default PID sensor, options: "TM_1", "TH"
@@ -404,29 +406,34 @@ class DataCollectionUI:
         self.eq_C_entry = ttk.Entry(self.res_eq_frame, textvariable=self.equation_param_C_var, width=10, state=tk.DISABLED)
         self.eq_C_entry.grid(row=3, column=1, padx=5, pady=3, sticky=tk.W)
         
+        # Row 4: MOSFET Rds(on)
+        ttk.Label(self.res_eq_frame, text="MOSFET Rds(on) (Ω):").grid(row=4, column=0, padx=5, pady=3, sticky=tk.W)
+        self.rds_on_entry = ttk.Entry(self.res_eq_frame, textvariable=self.rds_on_var, width=10, state=tk.DISABLED)
+        self.rds_on_entry.grid(row=4, column=1, padx=5, pady=3, sticky=tk.W)
+
         # Button and Status Label to the right, similar to PID control blocks
         self.corrected_power_button = ttk.Button(self.res_eq_frame, text="Start Corr.Pwr", command=self.toggle_corrected_direct_power, state=tk.DISABLED)
         self.corrected_power_button.grid(row=0, column=2, rowspan=1, padx=10, pady=5, sticky="ewns") # Span 1 row
 
         self.corrected_power_status_label = tk.Label(self.res_eq_frame, text="Corrected Pwr: Off", wraplength=220, justify=tk.LEFT) # Increased wraplength
-        self.corrected_power_status_label.grid(row=1, column=2, rowspan=3, padx=10, pady=2, sticky="nsew") # Starts at row 1, spans 3 rows
+        self.corrected_power_status_label.grid(row=1, column=2, rowspan=4, padx=10, pady=2, sticky="nsew") # Starts at row 1, spans 4 rows (to accommodate Rds(on) label)
         self.res_eq_frame.grid_columnconfigure(2, weight=1)
 
 
     def _setup_power_pid_controls(self):
         """Sets up the PID power control elements."""
         self.power_pid_frame = ttk.LabelFrame(self.middle_column_frame, text="PID Power Control (Watts)")
-        self.power_pid_frame.pack(pady=5, padx=5, fill="x")
+        self.power_pid_frame.pack(pady=(5,0), padx=5, fill="x") # Reduced bottom padding
 
         # Row 0: Target Power
         ttk.Label(self.power_pid_frame, text="Target Power (W):").grid(row=0, column=0, padx=5, pady=3, sticky=tk.W)
         self.power_pid_setpoint_entry = ttk.Entry(self.power_pid_frame, textvariable=self.power_pid_setpoint_var, width=7)
-        self.power_pid_setpoint_entry.grid(row=0, column=1, padx=5, pady=3, sticky=tk.W)
+        self.power_pid_setpoint_entry.grid(row=0, column=1, padx=5, pady=(3,0), sticky=tk.W) # Reduced bottom padding
 
         # Row 1: Kp
         ttk.Label(self.power_pid_frame, text="Kp:").grid(row=1, column=0, padx=5, pady=3, sticky=tk.W)
         self.power_pid_kp_entry = ttk.Entry(self.power_pid_frame, textvariable=self.power_pid_kp_var, width=7)
-        self.power_pid_kp_entry.grid(row=1, column=1, padx=5, pady=3, sticky=tk.W)
+        self.power_pid_kp_entry.grid(row=1, column=1, padx=5, pady=(3,0), sticky=tk.W) # Reduced bottom padding
 
         # Row 2: Ki
         ttk.Label(self.power_pid_frame, text="Ki:").grid(row=2, column=0, padx=5, pady=3, sticky=tk.W)
@@ -436,14 +443,14 @@ class DataCollectionUI:
         # Row 3: Kd
         ttk.Label(self.power_pid_frame, text="Kd:").grid(row=3, column=0, padx=5, pady=3, sticky=tk.W)
         self.power_pid_kd_entry = ttk.Entry(self.power_pid_frame, textvariable=self.power_pid_kd_var, width=7)
-        self.power_pid_kd_entry.grid(row=3, column=1, padx=5, pady=3, sticky=tk.W)
+        self.power_pid_kd_entry.grid(row=3, column=1, padx=5, pady=(3,0), sticky=tk.W) # Reduced bottom padding
 
         # Column 2: Button and Status
         self.power_pid_button = ttk.Button(self.power_pid_frame, text="Start Power Ctrl", command=self.toggle_power_pid, state=tk.DISABLED)
         self.power_pid_button.grid(row=0, column=2, rowspan=1, padx=10, pady=5, sticky="ewns") 
         
         self.power_pid_status_label = tk.Label(self.power_pid_frame, text="Power PID Status: Off", wraplength=200, justify=tk.LEFT)
-        self.power_pid_status_label.grid(row=1, column=2, rowspan=3, padx=10, pady=2, sticky="nsew") # Starts at row 1, spans 3 rows
+        self.power_pid_status_label.grid(row=1, column=2, rowspan=3, padx=10, pady=(2,0), sticky="nsew") # Starts at row 1, spans 3 rows, reduced bottom padding
 
         self.power_pid_frame.grid_columnconfigure(0, weight=0)
         self.power_pid_frame.grid_columnconfigure(1, weight=0)
@@ -585,6 +592,7 @@ class DataCollectionUI:
         self.eq_A_entry.config(state=pid_entry_state)
         self.eq_B_entry.config(state=pid_entry_state)
         self.eq_C_entry.config(state=pid_entry_state) # Manage state for Param C entry
+        self.rds_on_entry.config(state=pid_entry_state) # Manage state for Rds(on) entry
         if is_corrected_direct_mode:
             self.corrected_power_button.config(state=tk.NORMAL if self.arduino and self.arduino.running else tk.DISABLED)
             if not self.corrected_direct_power_active: # If not active, ensure button text and status are reset
@@ -766,24 +774,37 @@ class DataCollectionUI:
             try:
                 temps_to_display = self.arduino.return_temperature()
 
-                if self.voltage_meter:
-                    voltage_list = self.voltage_meter.read_voltage()
-                    if voltage_list: voltage_val = voltage_list[0]
+                try:
+                    if self.voltage_meter:
+                        voltage_list = self.voltage_meter.read_voltage()
+                        if voltage_list: voltage_val = voltage_list[0]
+                except pyvisa.errors.VisaIOError as ve_v:
+                    print(f"[PreRecDisp_VISA_ERROR] Voltage meter: {ve_v}")
+                    voltage_val = None # Ensure it's None on error
+                except Exception as e_v:
+                    print(f"[PreRecDisp_ERROR] Voltage meter: {e_v}")
+                    voltage_val = None
                 
-                if self.current_meter:
-                    current_list = self.current_meter.read_current()
-                    if current_list: current_val = current_list[0]
+                try:
+                    if self.current_meter:
+                        current_list = self.current_meter.read_current()
+                        if current_list: current_val = current_list[0]
+                except pyvisa.errors.VisaIOError as ve_c:
+                    print(f"[PreRecDisp_VISA_ERROR] Current meter: {ve_c}")
+                    current_val = None # Ensure it's None on error
+                except Exception as e_c:
+                    print(f"[PreRecDisp_ERROR] Current meter: {e_c}")
+                    current_val = None
 
                 if not self.stop_pre_recording_display_event.is_set(): # Check again before UI update
                     self.master.after(0, self.update_realtime_display, voltage_val, current_val, temps_to_display)
 
             except pyvisa.errors.VisaIOError as ve:
-                print(f"[PreRecDisp] VISA Error during pre-recording display: {ve}") # Log error, continue
+                print(f"[PreRecDisp] General VISA Error during pre-recording display (should be caught by specific handlers): {ve}") # Log error, continue
             except serial.SerialException as se:
                 print(f"[PreRecDisp] Serial Error during pre-recording display: {se}") # Log error, loop might exit if arduino.running becomes false
             except Exception as e:
                 print(f"[PreRecDisp] Generic Error during pre-recording display: {e}")
-            
             time.sleep(self.pre_recording_display_interval)
         # print("[PreRecDisp] Pre-recording display loop finished.") # Debug
 
@@ -994,10 +1015,14 @@ class DataCollectionUI:
                 voltage_list = self.voltage_meter.read_voltage() 
                 current_list = self.current_meter.read_current()
                 if voltage_list and current_list and voltage_list[0] is not None and current_list[0] is not None:
-                    initial_power_for_pid = voltage_list[0] * current_list[0]
+                    initial_power_for_pid = float(voltage_list[0]) * float(current_list[0])
+            except pyvisa.errors.VisaIOError as ve:
+                print(f"[PowerPIDLoop_INIT_VISA_ERROR] Error getting initial power for PID priming: {ve}")
             except Exception as e:
                 print(f"[PowerPIDLoop_ERROR] Error getting initial power for PID priming: {e}")
         # --- End priming read ---
+
+
 
         self.power_pid_controller.reset()
         if initial_power_for_pid is not None:
@@ -1015,12 +1040,28 @@ class DataCollectionUI:
 
         while not self.stop_power_pid_event.is_set() and self.arduino and self.arduino.running and self.voltage_meter and self.current_meter:
             current_power = None
-            voltage_list = self.voltage_meter.read_voltage()
-            current_list = self.current_meter.read_current()
+            voltage_val, current_val = None, None
 
-            if voltage_list and current_list and voltage_list[0] is not None and current_list[0] is not None:
-                current_power = voltage_list[0] * current_list[0]
+            try:
+                if self.voltage_meter:
+                    voltage_list_loop = self.voltage_meter.read_voltage()
+                    if voltage_list_loop: voltage_val = voltage_list_loop[0]
+            except pyvisa.errors.VisaIOError as ve_v:
+                print(f"[PowerPIDLoop_VISA_ERROR] Voltage meter: {ve_v}")
+            except Exception as e_v:
+                print(f"[PowerPIDLoop_ERROR] Voltage meter: {e_v}")
+            
+            try:
+                if self.current_meter:
+                    current_list_loop = self.current_meter.read_current()
+                    if current_list_loop: current_val = current_list_loop[0]
+            except pyvisa.errors.VisaIOError as ve_c:
+                print(f"[PowerPIDLoop_VISA_ERROR] Current meter: {ve_c}")
+            except Exception as e_c:
+                print(f"[PowerPIDLoop_ERROR] Current meter: {e_c}")
 
+            if voltage_val is not None and current_val is not None:
+                current_power = float(voltage_val) * float(current_val)
             pwm_output_float = self.power_pid_controller.update(current_power)
             print(f"[PowerPIDLoop] Current Power: {current_power}, PID Output (0-255): {pwm_output_float}")
 
@@ -1064,16 +1105,22 @@ class DataCollectionUI:
             param_A = self.equation_param_A_var.get()
             param_B = self.equation_param_B_var.get() # param_B can be zero or negative
             param_C = self.equation_param_C_var.get() 
+            rds_on = self.rds_on_var.get()
 
             if target_power < 0:
                 messagebox.showwarning("Input Warning", "Target power should be non-negative. Using absolute value.")
                 target_power = abs(target_power)
                 self.corrected_power_target_var.set(target_power) # Update dedicated var
             
-            # param_C can be any real number, so no specific validation here unless R_actual must be > 0
+            # param_C can be any real number
             if param_A <= 0: # A must be positive for R = A*exp(B*T)
                 messagebox.showerror("Input Error", "Equation parameter A must be positive.")
                 return
+            
+            if rds_on < 0:
+                messagebox.showerror("Input Error", "MOSFET Rds(on) must be non-negative.")
+                return
+
 
         except tk.TclError:
             messagebox.showerror("Input Error", "Invalid target power or equation parameter value(s).")
@@ -1110,74 +1157,133 @@ class DataCollectionUI:
         last_ui_update_time = time.time()
         ui_update_interval = self.pre_recording_display_interval
         target_power_w = self.corrected_power_target_var.get() # Use dedicated target var
+        print(f"[CorrectedPwrLoop_DEBUG] Initial Target Power (P_target_w): {target_power_w} W")
+        print(f"[CorrectedPwrLoop_DEBUG] NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM: {self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM} V")
         # Get equation parameters once at the start of the loop
         try:
             param_A = self.equation_param_A_var.get()
             param_B = self.equation_param_B_var.get()
             param_C = self.equation_param_C_var.get()
+            rds_on = self.rds_on_var.get() # Get Rds(on)
+
+            # Print parameters after successful retrieval
+            print(f"[CorrectedPwrLoop_DEBUG] Parameters successfully read - A: {param_A}, B: {param_B}, C: {param_C}, Rds(on): {rds_on}")
+
             if param_A <= 0: # Should have been caught by start, but good to re-check
                 print("[CorrectedDirectPwrLoop] Error: Parameter A is not positive. Stopping loop.")
                 self.master.after(0, self.stop_corrected_direct_power) # Schedule stop on main thread
                 # self.corrected_power_button.config(text="Start Corr.Pwr") # Reset button on error
                 return
+            if rds_on < 0: # Should have been caught by start
+                print("[CorrectedDirectPwrLoop] Error: Rds(on) is negative. Stopping loop.")
+                self.master.after(0, self.stop_corrected_direct_power)
+                return
         except tk.TclError:
+            print(f"[CorrectedPwrLoop_DEBUG] Error reading parameters. Target Power: {target_power_w}")
             print("[CorrectedDirectPwrLoop] Error: Could not get equation parameters. Stopping loop.")
             self.master.after(0, self.stop_corrected_direct_power)
             return
 
         while not self.stop_corrected_direct_power_event.is_set() and self.arduino and self.arduino.running and self.voltage_meter and self.current_meter:
-            voltage_list = self.voltage_meter.read_voltage()
-            current_list = self.current_meter.read_current()
-            temps_arduino = self.arduino.return_temperature() # TM_1 is at index 2
-            
-            measured_power, R_actual, pwm_final_sent = None, 0.0, 0 # R_actual default to 0 if not calculable
+            voltage_val, current_val = None, None
+            voltage_list, current_list = None, None # Keep for structure if needed, but use _val
 
-            if voltage_list and current_list: # We have V and I readings
-                measured_power = voltage_list[0] * current_list[0]
+            try:
+                if self.voltage_meter:
+                    voltage_list = self.voltage_meter.read_voltage()
+                    if voltage_list: voltage_val = voltage_list[0]
+            except pyvisa.errors.VisaIOError as ve_v:
+                print(f"[CorrectedPwrLoop_VISA_ERROR] Timeout/Error reading voltage: {ve_v}")
+            except Exception as e_v:
+                print(f"[CorrectedPwrLoop_ERROR] Unexpected error reading voltage: {e_v}")
+
+            try:
+                if self.current_meter:
+                    current_list = self.current_meter.read_current()
+                    if current_list: current_val = current_list[0]
+            except pyvisa.errors.VisaIOError as ve_c:
+                print(f"[CorrectedPwrLoop_VISA_ERROR] Timeout/Error reading current: {ve_c}")
+            except Exception as e_c:
+                print(f"[CorrectedPwrLoop_ERROR] Unexpected error reading current: {e_c}")
+
+            temps_arduino = self.arduino.return_temperature() # TM_1 is at index 2
+            measured_power, R_heater, pwm_final_sent = None, 0.0, 0 # R_heater default to 0 if not calculable
+            if voltage_val is not None and current_val is not None: # We have V and I readings
+                measured_power = float(voltage_val) * float(current_val)
+                print(f"[CorrectedPwrLoop_DEBUG] Measured Total Power (V*I): {measured_power:.3f} W (V={voltage_list[0]:.3f}, I={current_list[0]:.3f})")
 
             if temps_arduino.size == 5 and temps_arduino[2] is not None and temps_arduino[2] > -1: # Valid TM_1
                 current_temp_for_R = temps_arduino[2] # Using TM_1
-                R_actual = self.get_resistance_from_equation(current_temp_for_R, param_A, param_B, param_C)
-                # print(f"[CorrectedDirectPwrLoop] Temp: {current_temp_for_R}, A: {param_A}, B: {param_B}, R_actual: {R_actual}") # Debug
+                print(f"[CorrectedPwrLoop_DEBUG] Current Temp for R (TM_1): {current_temp_for_R}°C")
+                R_heater = self.get_resistance_from_equation(current_temp_for_R, param_A, param_B, param_C)
+                print(f"[CorrectedPwrLoop_DEBUG] Calculated R_heater: {R_heater} Ω (using A={param_A}, B={param_B}, C={param_C}, Rds(on)={rds_on})")
 
-                if R_actual is not None and R_actual > 0:
+                if R_heater is not None and R_heater > 1e-3: # Ensure R_heater is valid and reasonably positive
                     if target_power_w >= 0 and self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM > 0:
-                        V_required = np.sqrt(target_power_w * R_actual)
-                        pwm_calculated_float = (V_required / self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM) * 255.0
+                        # Step 1: Calculate target current I_target for R_heater
+                        I_target = np.sqrt(target_power_w / R_heater)
+                        print(f"[CorrectedPwrLoop_DEBUG] Step 1: I_target = sqrt({target_power_w} / {R_heater}) = {I_target:.4f} A")
+
+                        # Step 2: Calculate total voltage V_total_required for (R_heater + rds_on)
+                        V_total_required = I_target * (R_heater + rds_on)
+                        print(f"[CorrectedPwrLoop_DEBUG] Step 2: V_total_required = {I_target:.4f} * ({R_heater} + {rds_on}) = {V_total_required:.4f} V")
+
+                        # Step 3: Calculate PWM based on V_total_required
+                        pwm_calculated_float = (V_total_required / self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM) * 255.0
+                        print(f"[CorrectedPwrLoop_DEBUG] Step 3: pwm_calculated_float = ({V_total_required:.4f} / {self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM}) * 255.0 = {pwm_calculated_float:.4f}")
+                        
                         pwm_final_sent = int(round(max(0, min(pwm_calculated_float, 255))))
+                        
+                        # Comprehensive debug print for this iteration before sending PWM
+                        print(f"[CorrectedPwrLoop_DEBUG_ITERATION_CALC] "
+                              f"TgtP_h: {target_power_w:.2f}W, MeasP_tot: {measured_power if measured_power is not None else 'N/A'}W, "
+                              f"Temp_R: {current_temp_for_R:.2f}C, R_h: {R_heater:.3f}Ω, Rds: {rds_on:.3f}Ω, "
+                              f"I_tgt: {I_target:.3f}A, V_tot_req: {V_total_required:.3f}V, PWM_calc: {pwm_calculated_float:.2f}, PWM_sent: {pwm_final_sent}")
+                        
                         self.arduino.control_arduino(pwm_final_sent)
+                        # print(f"[CorrectedPwrLoop_DEBUG] PWM Sent: {pwm_final_sent}") # Made redundant by the comprehensive print above
                     else: # target power is negative, or V_supply is not set
+                        # At this point, R_heater and current_temp_for_R should be valid
+                        print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: TgtP<0 or V_supply<=0. PWM=0. "
+                              f"TgtP_h: {target_power_w:.2f}, MeasP_tot: {measured_power if measured_power is not None else 'N/A'}, "
+                              f"Temp_R: {current_temp_for_R:.2f}C, R_h: {R_heater:.3f}Ω")
                         self.arduino.control_arduino(0) 
                         pwm_final_sent = 0
-                else: # R_actual could not be calculated or is not positive
+                else: # R_heater could not be calculated or is not positive enough
+                    # current_temp_for_R was valid, R_heater is the issue
+                    print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: R_heater invalid/small ({R_heater}). PWM=0. "
+                          f"MeasP_tot: {measured_power if measured_power is not None else 'N/A'}, Temp_R: {current_temp_for_R:.2f}C")
                     self.arduino.control_arduino(0) 
                     pwm_final_sent = 0
-            else: # No valid temperature for R_actual
+            else: # No valid temperature for R_heater
+                # current_temp_for_R is the issue, R_heater would not be calculated
+                print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: Invalid Temp for R_heater. PWM=0. "
+                      f"MeasP_tot: {measured_power if measured_power is not None else 'N/A'}")
                 self.arduino.control_arduino(0) # Safety: turn off
                 pwm_final_sent = 0
 
             if time.time() - last_ui_update_time >= ui_update_interval:
                 # Prepare display strings
-                measured_power_str = f"{measured_power:.1f}" if measured_power is not None else "--"
-                
+                measured_total_power_str = f"{measured_power:.1f}" if measured_power is not None else "--"
                 temp_tm1_val = None
                 if temps_arduino.size == 5 and temps_arduino[2] is not None and temps_arduino[2] > -1:
                     temp_tm1_val = temps_arduino[2]
                 temp_tm1_str = f"{temp_tm1_val:.1f}" if temp_tm1_val is not None else "--"
                 
-                r_actual_str = "--"
-                if R_actual is not None and R_actual > 0: # R_actual could be float('inf')
-                    if R_actual == float('inf'):
-                        r_actual_str = "inf"
+                r_heater_str = "--"
+                if R_heater is not None and R_heater > 0: # R_heater could be float('inf')
+                    if R_heater == float('inf'):
+                        r_heater_str = "inf"
                     else:
-                        r_actual_str = f"{R_actual:.2f}"
+                        r_heater_str = f"{R_heater:.2f}"
 
                 pwm_perc_str = f"{int(round(pwm_final_sent/255*100))}%"
+                rds_on_str = f"{rds_on:.3f}" # Display Rds(on) used in calculation
 
                 # Construct the 3-line status text
-                line1 = f"P Tgt: {target_power_w:.1f}W Act: {measured_power_str}W"
-                line2 = f"T1: {temp_tm1_str}°C R: {r_actual_str}Ω"
-                line3 = f"PWM: {pwm_perc_str} ({pwm_final_sent})"
+                line1 = f"P Tgt(Htr): {target_power_w:.1f}W Act(Tot): {measured_total_power_str}W"
+                line2 = f"T1: {temp_tm1_str}°C Rh: {r_heater_str}Ω Rds: {rds_on_str}Ω"
+                line3 = f"PWM: {pwm_perc_str} ({pwm_final_sent}) VtotReq: {V_total_required:.2f}V" if 'V_total_required' in locals() else f"PWM: {pwm_perc_str} ({pwm_final_sent})"
                 status_text_to_display = f"{line1}\n{line2}\n{line3}"
                 self.master.after(0, self.corrected_power_status_label.config, {"text": status_text_to_display})
                 last_ui_update_time = time.time()
@@ -1240,8 +1346,12 @@ class DataCollectionUI:
             try: # Validate equation parameters before starting recording in this mode
                 param_A_val = self.equation_param_A_var.get()
                 _ = self.equation_param_C_var.get() # Just to check if it's a valid float
+                rds_on_val = self.rds_on_var.get()
                 if param_A_val <= 0:
                     messagebox.showerror("Error", "Corrected Direct Power: Equation parameter A must be positive.")
+                    return
+                if rds_on_val < 0:
+                    messagebox.showerror("Error", "Corrected Direct Power: MOSFET Rds(on) must be non-negative.")
                     return
             except tk.TclError:
                 messagebox.showerror("Error", "Corrected Direct Power: Invalid equation parameter(s).")
@@ -1448,20 +1558,37 @@ class DataCollectionUI:
             try:                
                 if self.active_recording_control_mode == "MANUAL_PWM":
                     if self.arduino and self.arduino.running:
-                         self.arduino.control_arduino(self.current_pwm_setting_0_255) # Send current PWM value
-                voltage_list = self.voltage_meter.read_voltage()
-                current_list = self.current_meter.read_current()
-                temperature_array = self.arduino.return_temperature() # numpy array
+                         self.arduino.control_arduino(self.current_pwm_setting_0_255)
+                
+                voltage_val, current_val = None, None 
+                temperature_array = np.array([-1.0]*5) # Default if Arduino read fails or not connected
 
-                if voltage_list and current_list and temperature_array.size == 5:
-                    # Assuming read_voltage/current return list of one float
-                    voltage_val = voltage_list[0]
-                    current_val = current_list[0]
-                    
+                try:
+                    if self.voltage_meter:
+                        voltage_list_loop = self.voltage_meter.read_voltage()
+                        if voltage_list_loop: voltage_val = voltage_list_loop[0]
+                except pyvisa.errors.VisaIOError as ve_v:
+                    print(f"[DCL_VISA_ERROR] Voltage meter: {ve_v}")
+                except Exception as e_v:
+                    print(f"[DCL_ERROR] Voltage meter: {e_v}")
+
+                try:
+                    if self.current_meter:
+                        current_list_loop = self.current_meter.read_current()
+                        if current_list_loop: current_val = current_list_loop[0]
+                except pyvisa.errors.VisaIOError as ve_c:
+                    print(f"[DCL_VISA_ERROR] Current meter: {ve_c}")
+                except Exception as e_c:
+                    print(f"[DCL_ERROR] Current meter: {e_c}")
+                
+                if self.arduino and self.arduino.running:
+                    temperature_array = self.arduino.return_temperature()
+
+                if voltage_val is not None and current_val is not None and temperature_array.size == 5:
                     self.data.append([
                         current_loop_time - loop_start_time,
-                        voltage_val,
-                        current_val,
+                        float(voltage_val),
+                        float(current_val),
                         temperature_array[0], # TH
                         temperature_array[1], # Ttest
                         temperature_array[2], # TM_1
@@ -1646,6 +1773,7 @@ class DataCollectionUI:
         self.eq_A_entry.config(state=tk.DISABLED)
         self.eq_B_entry.config(state=tk.DISABLED)
         self.eq_C_entry.config(state=tk.DISABLED) # Disable Param C entry
+        self.rds_on_entry.config(state=tk.DISABLED) # Disable Rds(on) entry
 
         self.rec_manual_pwm_radio.config(state=tk.DISABLED)
         self.rec_corrected_direct_power_radio.config(state=tk.DISABLED)
@@ -1695,23 +1823,28 @@ class DataCollectionUI:
             self.elapsed_time = 0 # Reset elapsed time
             self.update_time_label() # Update UI
 
-        # 4. Reset UI elements related to recording and general controls
+        # 4. Determine connection status *after* all stop actions
+        is_connected = self.arduino and self.arduino.running
+        controls_state = tk.NORMAL if is_connected else tk.DISABLED
+        radio_button_state = tk.NORMAL if is_connected else tk.DISABLED
+
+        # 5. Reset UI elements related to recording and general controls
         self.stop_button.config(state=tk.DISABLED)
         self.flip_button.config(state=tk.DISABLED)
         self.steak_type_entry.config(state=tk.NORMAL) # Allow editing for next run
 
-        # After E-Stop, always allow mode switching.
-        # Specific mode operation buttons will still be governed by device connection status
-        # handled within _handle_control_mode_change.
-        for radio_btn in [self.manual_pwm_radio, self.pid_preheat_radio, self.pid_power_radio,
-                          self.corrected_direct_power_radio, self.rec_manual_pwm_radio,
-                          self.rec_pid_power_radio, self.rec_corrected_direct_power_radio]:
-            if hasattr(self, radio_btn.winfo_name()):
-                radio_btn.config(state=tk.NORMAL)
+        # Set state of control mode radio buttons based on connection status
+        radio_button_names = [
+            'manual_pwm_radio', 'pid_preheat_radio', 'pid_power_radio',
+            'corrected_direct_power_radio', 'rec_manual_pwm_radio',
+            'rec_pid_power_radio', 'rec_corrected_direct_power_radio'
+        ]
+        for name in radio_button_names:
+            widget = getattr(self, name, None)
+            if widget: # Check if the attribute exists and is a widget
+                widget.config(state=radio_button_state)
 
         # Other buttons' states will be set by _handle_control_mode_change based on actual connection.
-        is_connected = self.arduino and self.arduino.running
-        controls_state = tk.NORMAL if is_connected else tk.DISABLED
         self.start_button.config(state=controls_state)
         self.connect_button.config(state=tk.DISABLED if is_connected else tk.NORMAL)
         
@@ -1719,7 +1852,7 @@ class DataCollectionUI:
 
         # 5. Restart pre-recording display if devices are still connected
         if is_connected:
-            self.stop_pre_recording_display_event.clear()
+            self.stop_pre_recording_display_event.clear() # Ensure event is clear
             if not (self.pre_recording_display_thread and self.pre_recording_display_thread.is_alive()):
                 self.pre_recording_display_thread = threading.Thread(target=self.run_pre_recording_display_loop, daemon=True)
                 self.pre_recording_display_thread.start()
