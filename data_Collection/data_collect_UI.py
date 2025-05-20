@@ -123,12 +123,12 @@ class DataCollectionUI:
     DEFAULT_POWER_PID_KP = 4.5      # Slightly reduced Kp
     DEFAULT_POWER_PID_KI = 0.3     # Slightly reduced Ki
     DEFAULT_POWER_PID_KD = 0.1     # Significantly increased Kd to counteract undershoot
-    DEFAULT_R_REF = 1.0 # Default reference resistance if file not loaded
-    NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM = 31.5 # Assumed V_out at PWM=255. Adjust as needed.    
+    DEFAULT_R_REF = 1.0 # Default reference resistance if file not loaded   
     DEFAULT_EQ_PARAM_A = 14.5341 # Example: R0 for R(T) = A * exp(B*T)
     DEFAULT_EQ_PARAM_B = 0.001999 # Example: temperature coefficient for copper/nichrome like
     DEFAULT_EQ_PARAM_C = 0.0 # Example: Constant offset for R(T) = A * exp(B*T) + C
-    DEFAULT_RDS_ON = 0.05 # Default MOSFET Rds(on) in Ohms
+    DEFAULT_RDS_ON = 0 # Default MOSFET Rds(on) in Ohms
+    DEFAULT_NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM = 30 # Assumed V_out at PWM=255. Adjust as needed.
     DEFAULT_CORRECTED_POWER_TARGET = 20.0 # Default target power for Corrected Power mode
     def __init__(self, master):
         self.master = master
@@ -174,6 +174,7 @@ class DataCollectionUI:
         self.equation_param_B_var = tk.DoubleVar(value=self.DEFAULT_EQ_PARAM_B)
         self.equation_param_C_var = tk.DoubleVar(value=self.DEFAULT_EQ_PARAM_C)
         self.rds_on_var = tk.DoubleVar(value=self.DEFAULT_RDS_ON) # New: MOSFET Rds(on)
+        self.nominal_supply_voltage_var = tk.DoubleVar(value=self.DEFAULT_NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM)
         self.corrected_power_target_var = tk.DoubleVar(value=self.DEFAULT_CORRECTED_POWER_TARGET)
         # UI Variables (Tkinter variables) for PID and other settings
         self.pid_sensor_var = tk.StringVar(value="TM_1") # Default PID sensor, options: "TM_1", "TH"
@@ -191,6 +192,7 @@ class DataCollectionUI:
         # Removed self.temp_resist_filename_var
         self.pwm_percentage_var = tk.IntVar(value=self.DEFAULT_PWM_PERCENTAGE)
         self.steak_type_var = tk.StringVar(value=self.DEFAULT_STEAK_TYPE)
+        self.invert_pwm_var = tk.BooleanVar(value=False) # For PWM inversion
 
         # Internal state for PWM
         self.current_pwm_setting_0_255 = self._calculate_pwm_actual(self.pwm_percentage_var.get()) # Actual PWM value (0-255) for Arduino
@@ -329,12 +331,18 @@ class DataCollectionUI:
         self.set_pwm_zero_button = ttk.Button(self.pwm_frame, text="Set to 0", command=self.set_pwm_to_zero, state=tk.DISABLED)
         self.set_pwm_zero_button.grid(row=0, column=4, padx=5, pady=3, sticky="ew")
 
+        # Row 1: Invert PWM Checkbox
+        self.pwm_invert_checkbox = ttk.Checkbutton(self.pwm_frame, text="Invert PWM Output", variable=self.invert_pwm_var, state=tk.DISABLED)
+        self.pwm_invert_checkbox.grid(row=1, column=0, columnspan=3, padx=5, pady=3, sticky=tk.W)
+
+
         # Configure column weights for pwm_frame grid to allow expansion if needed
         self.pwm_frame.grid_columnconfigure(0, weight=0) # Label column
         self.pwm_frame.grid_columnconfigure(1, weight=0) # Entry/Button column
         self.pwm_frame.grid_columnconfigure(2, weight=0) # Range Label/Button column
         self.pwm_frame.grid_columnconfigure(3, weight=1) # Button column
         self.pwm_frame.grid_columnconfigure(4, weight=1) # Button column
+
 
     def _setup_pid_controls(self):
         """Sets up the PID preheat control elements."""
@@ -411,14 +419,19 @@ class DataCollectionUI:
         self.rds_on_entry = ttk.Entry(self.res_eq_frame, textvariable=self.rds_on_var, width=10, state=tk.DISABLED)
         self.rds_on_entry.grid(row=4, column=1, padx=5, pady=3, sticky=tk.W)
 
+        # Row 5: Nominal Supply Voltage at Max PWM
+        ttk.Label(self.res_eq_frame, text="V_supply_max_pwm (V):").grid(row=5, column=0, padx=5, pady=3, sticky=tk.W)
+        self.nominal_supply_voltage_entry = ttk.Entry(self.res_eq_frame, textvariable=self.nominal_supply_voltage_var, width=10, state=tk.DISABLED)
+        self.nominal_supply_voltage_entry.grid(row=5, column=1, padx=5, pady=3, sticky=tk.W)
+
         # Button and Status Label to the right, similar to PID control blocks
         self.corrected_power_button = ttk.Button(self.res_eq_frame, text="Start Corr.Pwr", command=self.toggle_corrected_direct_power, state=tk.DISABLED)
         self.corrected_power_button.grid(row=0, column=2, rowspan=1, padx=10, pady=5, sticky="ewns") # Span 1 row
 
         self.corrected_power_status_label = tk.Label(self.res_eq_frame, text="Corrected Pwr: Off", wraplength=220, justify=tk.LEFT) # Increased wraplength
-        self.corrected_power_status_label.grid(row=1, column=2, rowspan=4, padx=10, pady=2, sticky="nsew") # Starts at row 1, spans 4 rows (to accommodate Rds(on) label)
+        self.corrected_power_status_label.grid(row=1, column=2, rowspan=5, padx=10, pady=2, sticky="nsew") # Starts at row 1, spans 5 rows
         self.res_eq_frame.grid_columnconfigure(2, weight=1)
-
+        
 
     def _setup_power_pid_controls(self):
         """Sets up the PID power control elements."""
@@ -547,11 +560,15 @@ class DataCollectionUI:
 
         # --- Enable/Disable Manual PWM Controls ---
         is_manual_mode = (selected_mode == "MANUAL_PWM")
-        manual_pwm_button_state = tk.NORMAL if is_manual_mode and self.arduino and self.arduino.running else tk.DISABLED
+        arduino_connected = self.arduino and self.arduino.running
+        manual_pwm_button_state = tk.NORMAL if is_manual_mode and arduino_connected else tk.DISABLED
         # PWM entry is always enabled if connected, buttons depend on mode
-        self.pwm_entry.config(state=tk.NORMAL if self.arduino and self.arduino.running else tk.DISABLED)
+        pwm_general_controls_state = tk.NORMAL if arduino_connected else tk.DISABLED
+        self.pwm_entry.config(state=pwm_general_controls_state)
         self.set_pwm_button.config(state=manual_pwm_button_state)
         self.set_pwm_zero_button.config(state=manual_pwm_button_state)
+        if hasattr(self, 'pwm_invert_checkbox'): # Ensure checkbox exists
+            self.pwm_invert_checkbox.config(state=pwm_general_controls_state)
 
         # --- Enable/Disable PID Preheat Controls ---
         is_preheat_mode = (selected_mode == "PID_PREHEAT")
@@ -593,6 +610,7 @@ class DataCollectionUI:
         self.eq_B_entry.config(state=pid_entry_state)
         self.eq_C_entry.config(state=pid_entry_state) # Manage state for Param C entry
         self.rds_on_entry.config(state=pid_entry_state) # Manage state for Rds(on) entry
+        self.nominal_supply_voltage_entry.config(state=pid_entry_state) # Manage state for V_supply_max_pwm entry
         if is_corrected_direct_mode:
             self.corrected_power_button.config(state=tk.NORMAL if self.arduino and self.arduino.running else tk.DISABLED)
             if not self.corrected_direct_power_active: # If not active, ensure button text and status are reset
@@ -616,6 +634,12 @@ class DataCollectionUI:
         # as the actual mode switch happens in start_recording.
         # self.update_status(f"Recording mode set to: {selected_recording_mode}") # Optional: for debugging
     # Removed Temperature-Resistance File Handling methods (load_temp_resistance_file, get_resistance_at_temp)
+
+    # --- PWM Inversion Helper ---
+    def _apply_pwm_inversion(self, pwm_value_0_255):
+        if self.invert_pwm_var.get():
+            return 255 - pwm_value_0_255
+        return pwm_value_0_255
 
     # --- Core Functionality Methods ---
     def _calculate_pwm_actual(self, percentage):
@@ -651,8 +675,11 @@ class DataCollectionUI:
 
             self.current_pwm_setting_0_255 = self._calculate_pwm_actual(percentage)
             self.pwm_label_display.config(text=f"PWM: {percentage}%") # Update label
-            self.arduino.control_arduino(self.current_pwm_setting_0_255)
-            self.update_status(f"PWM set to {self.pwm_percentage_var.get()}% ({self.current_pwm_setting_0_255})")
+            final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
+            self.arduino.control_arduino(final_pwm_to_send)
+            status_msg = f"PWM set to {self.pwm_percentage_var.get()}% ({self.current_pwm_setting_0_255}). "
+            status_msg += f"Sent to Arduino: {final_pwm_to_send}" if self.invert_pwm_var.get() else f"Sent to Arduino: {self.current_pwm_setting_0_255}"
+            self.update_status(status_msg)
         else:
             messagebox.showwarning("PWM Error", "Arduino not connected. Cannot send PWM command.")
 
@@ -670,13 +697,16 @@ class DataCollectionUI:
         if self.arduino and self.arduino.running:
             self.current_pwm_setting_0_255 = self._calculate_pwm_actual(0)
             self.pwm_label_display.config(text=f"PWM: 0%") # Update label
-            self.arduino.control_arduino(self.current_pwm_setting_0_255) # Send 0 to Arduino
-            self.update_status(f"PWM set to 0% (0)")
+            final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
+            self.arduino.control_arduino(final_pwm_to_send) # Send 0 (or 255 if inverted) to Arduino
+            status_msg = f"PWM set to 0% (0). "
+            status_msg += f"Sent to Arduino: {final_pwm_to_send}" if self.invert_pwm_var.get() else f"Sent to Arduino: {self.current_pwm_setting_0_255}"
+            self.update_status(status_msg)
         else:
             # Still update local state even if not connected, so UI reflects 0
             self.current_pwm_setting_0_255 = self._calculate_pwm_actual(0)
             self.pwm_label_display.config(text=f"PWM: 0%")
-            self.update_status("PWM set to 0% (Arduino not connected).")
+            self.update_status("PWM set to 0% (0) (Arduino not connected).")
 
     def reset_realtime_display(self):
         """Resets all real-time data display labels to their default '---' state."""
@@ -736,6 +766,8 @@ class DataCollectionUI:
             self.rec_manual_pwm_radio.config(state=tk.NORMAL)
             self.rec_corrected_direct_power_radio.config(state=tk.NORMAL)
             self.rec_pid_power_radio.config(state=tk.NORMAL)
+            if hasattr(self, 'pwm_invert_checkbox'):
+                self.pwm_invert_checkbox.config(state=tk.NORMAL)
 
             self._handle_control_mode_change() # Update UI based on current (default) mode
             self.emergency_stop_button.config(state=tk.NORMAL) # Enable E-Stop
@@ -919,16 +951,23 @@ class DataCollectionUI:
 
             if pwm_output_float is not None: # pwm_output_float could be None if update interval not met
                 pwm_to_send = int(round(pwm_output_float))
-                self.arduino.control_arduino(pwm_to_send)
+                final_pwm_value_sent = self._apply_pwm_inversion(pwm_to_send)
+                self.arduino.control_arduino(final_pwm_value_sent)
                 # print(f"[PreheatLoop] Sent PWM to Arduino: {pwm_to_send}")
                 
                 current_time = time.time()
                 if current_time - last_ui_update_time >= ui_update_interval:
                     target_temp_str = f"Target ({selected_sensor_name}): {self.pid_setpoint_var.get():.1f}°C"
                     actual_temp_str = f"Actual ({selected_sensor_name}): {actual_sensor_temp if actual_sensor_temp is not None else 'N/A'}°C"
-                    pwm_str = f"PID PWM: {int(round(pwm_output_float/255*100))}% ({pwm_to_send})"
-                    status_text = f"{target_temp_str}\n{actual_temp_str}\n{pwm_str}" # Display on multiple lines
-                    self.master.after(0, self.preheat_status_label.config, {"text": status_text})
+                    
+                    pwm_output_percentage = int(round(pwm_output_float / 255 * 100))
+                    raw_pwm_value = pwm_to_send
+                    
+                    pwm_info_str = f"PID PWM: {pwm_output_percentage}% ({raw_pwm_value})"
+                    if self.invert_pwm_var.get():
+                        pwm_info_str += f" -> Sent: {final_pwm_value_sent}"
+                    status_text_to_display = f"{target_temp_str}\n{actual_temp_str}\n{pwm_info_str}"
+                    self.master.after(0, self.preheat_status_label.config, {"text": status_text_to_display})
                     last_ui_update_time = current_time # Corrected variable name
 
             time.sleep(self.pid_control_interval / 2) # Shorter sleep, PID internal timing handles the actual update rate
@@ -1067,13 +1106,21 @@ class DataCollectionUI:
 
             if pwm_output_float is not None:
                 pwm_to_send = int(round(pwm_output_float))
-                self.arduino.control_arduino(pwm_to_send)
+                final_pwm_value_sent = self._apply_pwm_inversion(pwm_to_send)
+                self.arduino.control_arduino(final_pwm_value_sent)
                 # print(f"[PowerPIDLoop] Sent PWM to Arduino: {pwm_to_send}")
 
                 if time.time() - last_ui_update_time >= ui_update_interval:
-                    status_text = f"Target: {self.power_pid_setpoint_var.get():.1f}W\nActual: {current_power:.2f}W\nPID PWM: {int(round(pwm_output_float/255*100))}% ({pwm_to_send})"
-                    self.master.after(0, self.power_pid_status_label.config, {"text": status_text})
+                    pwm_output_percentage = int(round(pwm_output_float / 255 * 100))
+                    raw_pwm_value = pwm_to_send
+
+                    pwm_info_str = f"PID PWM: {pwm_output_percentage}% ({raw_pwm_value})"
+                    if self.invert_pwm_var.get():
+                        pwm_info_str += f" -> Sent: {final_pwm_value_sent}"
+                    status_text_to_display = f"Target: {self.power_pid_setpoint_var.get():.1f}W\nActual: {current_power:.2f}W\n{pwm_info_str}"
+                    self.master.after(0, self.power_pid_status_label.config, {"text": status_text_to_display})
                     last_ui_update_time = time.time()
+
             time.sleep(self.pid_control_interval / 2)
         print("[PowerPIDLoop] Power PID loop finished.")
 
@@ -1106,6 +1153,7 @@ class DataCollectionUI:
             param_B = self.equation_param_B_var.get() # param_B can be zero or negative
             param_C = self.equation_param_C_var.get() 
             rds_on = self.rds_on_var.get()
+            v_supply_max_pwm = self.nominal_supply_voltage_var.get()
 
             if target_power < 0:
                 messagebox.showwarning("Input Warning", "Target power should be non-negative. Using absolute value.")
@@ -1120,13 +1168,17 @@ class DataCollectionUI:
             if rds_on < 0:
                 messagebox.showerror("Input Error", "MOSFET Rds(on) must be non-negative.")
                 return
+            
+            if v_supply_max_pwm <= 0:
+                messagebox.showerror("Input Error", "Nominal Supply Voltage (V_supply_max_pwm) must be positive.")
+                return
 
 
         except tk.TclError:
             messagebox.showerror("Input Error", "Invalid target power or equation parameter value(s).")
             return
 
-        print(f"[UI_CorrectedDirectPwr] Starting. Target: {target_power}W, EqParams: A={param_A}, B={param_B}, C={param_C}")
+        # print(f"[UI_CorrectedDirectPwr] Starting. Target: {target_power}W, EqParams: A={param_A}, B={param_B}, C={param_C}")
         self.corrected_direct_power_active = True
         self.stop_corrected_direct_power_event.clear()
 
@@ -1156,18 +1208,21 @@ class DataCollectionUI:
     def run_corrected_direct_power_loop(self):
         last_ui_update_time = time.time()
         ui_update_interval = self.pre_recording_display_interval
-        target_power_w = self.corrected_power_target_var.get() # Use dedicated target var
-        print(f"[CorrectedPwrLoop_DEBUG] Initial Target Power (P_target_w): {target_power_w} W")
-        print(f"[CorrectedPwrLoop_DEBUG] NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM: {self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM} V")
+        target_power_w = self.corrected_power_target_var.get() 
+        # print(f"[CorrectedPwrLoop_DEBUG] Initial Target Power (P_target_w): {target_power_w} W")
+        # print(f"[CorrectedPwrLoop_DEBUG] NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM: {self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM} V")
         # Get equation parameters once at the start of the loop
         try:
             param_A = self.equation_param_A_var.get()
             param_B = self.equation_param_B_var.get()
             param_C = self.equation_param_C_var.get()
             rds_on = self.rds_on_var.get() # Get Rds(on)
+            v_supply_max_pwm = self.nominal_supply_voltage_var.get()
 
-            # Print parameters after successful retrieval
-            print(f"[CorrectedPwrLoop_DEBUG] Parameters successfully read - A: {param_A}, B: {param_B}, C: {param_C}, Rds(on): {rds_on}")
+            print(f"[CorrectedPwrLoop_PARAMS] Initial Corrected Power Parameters: "
+                  f"Target_Power: {target_power_w:.2f}W, A: {param_A:.4f}, B: {param_B:.6f}, C: {param_C:.4f}, "
+                  f"Rds(on): {rds_on:.3f}Ω, V_supply_max_pwm: {v_supply_max_pwm:.2f}V")
+
 
             if param_A <= 0: # Should have been caught by start, but good to re-check
                 print("[CorrectedDirectPwrLoop] Error: Parameter A is not positive. Stopping loop.")
@@ -1178,8 +1233,12 @@ class DataCollectionUI:
                 print("[CorrectedDirectPwrLoop] Error: Rds(on) is negative. Stopping loop.")
                 self.master.after(0, self.stop_corrected_direct_power)
                 return
+            if v_supply_max_pwm <= 0: # Should have been caught by start
+                print("[CorrectedDirectPwrLoop] Error: V_supply_max_pwm is not positive. Stopping loop.")
+                self.master.after(0, self.stop_corrected_direct_power)
+                return
         except tk.TclError:
-            print(f"[CorrectedPwrLoop_DEBUG] Error reading parameters. Target Power: {target_power_w}")
+            # print(f"[CorrectedPwrLoop_DEBUG] Error reading parameters. Target Power: {target_power_w}")
             print("[CorrectedDirectPwrLoop] Error: Could not get equation parameters. Stopping loop.")
             self.master.after(0, self.stop_corrected_direct_power)
             return
@@ -1210,62 +1269,67 @@ class DataCollectionUI:
             measured_power, R_heater, pwm_final_sent = None, 0.0, 0 # R_heater default to 0 if not calculable
             if voltage_val is not None and current_val is not None: # We have V and I readings
                 measured_power = float(voltage_val) * float(current_val)
-                print(f"[CorrectedPwrLoop_DEBUG] Measured Total Power (V*I): {measured_power:.3f} W (V={voltage_list[0]:.3f}, I={current_list[0]:.3f})")
+                # print(f"[CorrectedPwrLoop_DEBUG] Measured Total Power (V*I): {measured_power:.3f} W (V={voltage_list[0]:.3f}, I={current_list[0]:.3f})")
 
             if temps_arduino.size == 5 and temps_arduino[2] is not None and temps_arduino[2] > -1: # Valid TM_1
                 current_temp_for_R = temps_arduino[2] # Using TM_1
-                print(f"[CorrectedPwrLoop_DEBUG] Current Temp for R (TM_1): {current_temp_for_R}°C")
+                # print(f"[CorrectedPwrLoop_DEBUG] Current Temp for R (TM_1): {current_temp_for_R}°C")
                 R_heater = self.get_resistance_from_equation(current_temp_for_R, param_A, param_B, param_C)
-                print(f"[CorrectedPwrLoop_DEBUG] Calculated R_heater: {R_heater} Ω (using A={param_A}, B={param_B}, C={param_C}, Rds(on)={rds_on})")
+                # print(f"[CorrectedPwrLoop_DEBUG] Calculated R_heater: {R_heater} Ω (using A={param_A}, B={param_B}, C={param_C}, Rds(on)={rds_on})")
 
                 if R_heater is not None and R_heater > 1e-3: # Ensure R_heater is valid and reasonably positive
-                    if target_power_w >= 0 and self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM > 0:
+                    if target_power_w >= 0 and v_supply_max_pwm > 0:
                         # Step 1: Calculate target current I_target for R_heater
                         I_target = np.sqrt(target_power_w / R_heater)
-                        print(f"[CorrectedPwrLoop_DEBUG] Step 1: I_target = sqrt({target_power_w} / {R_heater}) = {I_target:.4f} A")
+                        # print(f"[CorrectedPwrLoop_DEBUG] Step 1: I_target = sqrt({target_power_w} / {R_heater}) = {I_target:.4f} A")
 
                         # Step 2: Calculate total voltage V_total_required for (R_heater + rds_on)
                         V_total_required = I_target * (R_heater + rds_on)
-                        print(f"[CorrectedPwrLoop_DEBUG] Step 2: V_total_required = {I_target:.4f} * ({R_heater} + {rds_on}) = {V_total_required:.4f} V")
-
+                        # print(f"[CorrectedPwrLoop_DEBUG] Step 2: V_total_required = {I_target:.4f} * ({R_heater} + {rds_on}) = {V_total_required:.4f} V")
                         # Step 3: Calculate PWM based on V_total_required
-                        pwm_calculated_float = (V_total_required / self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM) * 255.0
-                        print(f"[CorrectedPwrLoop_DEBUG] Step 3: pwm_calculated_float = ({V_total_required:.4f} / {self.NOMINAL_SUPPLY_VOLTAGE_AT_MAX_PWM}) * 255.0 = {pwm_calculated_float:.4f}")
+                        pwm_calculated_float = (V_total_required / v_supply_max_pwm) * 255.0
+                        # print(f"[CorrectedPwrLoop_DEBUG] Step 3: pwm_calculated_float = ({V_total_required:.4f} / {v_supply_max_pwm}) * 255.0 = {pwm_calculated_float:.4f}")
                         
                         pwm_final_sent = int(round(max(0, min(pwm_calculated_float, 255))))
                         
-                        # Comprehensive debug print for this iteration before sending PWM
-                        print(f"[CorrectedPwrLoop_DEBUG_ITERATION_CALC] "
+                        # Comprehensive debug print for this iteration
+                        print(f"[CorrectedPwrLoop_ITER_DEBUG] "
                               f"TgtP_h: {target_power_w:.2f}W, MeasP_tot: {measured_power if measured_power is not None else 'N/A'}W, "
                               f"Temp_R: {current_temp_for_R:.2f}C, R_h: {R_heater:.3f}Ω, Rds: {rds_on:.3f}Ω, "
                               f"I_tgt: {I_target:.3f}A, V_tot_req: {V_total_required:.3f}V, PWM_calc: {pwm_calculated_float:.2f}, PWM_sent: {pwm_final_sent}")
-                        
-                        self.arduino.control_arduino(pwm_final_sent)
+                        actual_pwm_sent_to_arduino = self._apply_pwm_inversion(pwm_final_sent)
+                        self.arduino.control_arduino(actual_pwm_sent_to_arduino)
                         # print(f"[CorrectedPwrLoop_DEBUG] PWM Sent: {pwm_final_sent}") # Made redundant by the comprehensive print above
                     else: # target power is negative, or V_supply is not set
                         # At this point, R_heater and current_temp_for_R should be valid
-                        print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: TgtP<0 or V_supply<=0. PWM=0. "
-                              f"TgtP_h: {target_power_w:.2f}, MeasP_tot: {measured_power if measured_power is not None else 'N/A'}, "
-                              f"Temp_R: {current_temp_for_R:.2f}C, R_h: {R_heater:.3f}Ω")
-                        self.arduino.control_arduino(0) 
+                        # print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: TgtP<0 or V_supply<=0. PWM=0. "
+                        #       f"TgtP_h: {target_power_w:.2f}, MeasP_tot: {measured_power if measured_power is not None else 'N/A'}, "
+                        #       f"Temp_R: {current_temp_for_R:.2f}C, R_h: {R_heater:.3f}Ω")
+                        effective_zero_pwm = self._apply_pwm_inversion(0)
+                        self.arduino.control_arduino(effective_zero_pwm)
                         pwm_final_sent = 0
                 else: # R_heater could not be calculated or is not positive enough
                     # current_temp_for_R was valid, R_heater is the issue
-                    print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: R_heater invalid/small ({R_heater}). PWM=0. "
-                          f"MeasP_tot: {measured_power if measured_power is not None else 'N/A'}, Temp_R: {current_temp_for_R:.2f}C")
-                    self.arduino.control_arduino(0) 
+                    # print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: R_heater invalid/small ({R_heater}). PWM=0. "
+                    #       f"MeasP_tot: {measured_power if measured_power is not None else 'N/A'}, Temp_R: {current_temp_for_R:.2f}C")
+                    effective_zero_pwm = self._apply_pwm_inversion(0)
+                    self.arduino.control_arduino(effective_zero_pwm)
                     pwm_final_sent = 0
             else: # No valid temperature for R_heater
                 # current_temp_for_R is the issue, R_heater would not be calculated
-                print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: Invalid Temp for R_heater. PWM=0. "
-                      f"MeasP_tot: {measured_power if measured_power is not None else 'N/A'}")
-                self.arduino.control_arduino(0) # Safety: turn off
+                # print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: Invalid Temp for R_heater. PWM=0. "
+                #       f"MeasP_tot: {measured_power if measured_power is not None else 'N/A'}")
+                effective_zero_pwm = self._apply_pwm_inversion(0)
+                self.arduino.control_arduino(effective_zero_pwm) # Safety: turn off
                 pwm_final_sent = 0
 
             if time.time() - last_ui_update_time >= ui_update_interval:
                 # Prepare display strings
                 measured_total_power_str = f"{measured_power:.1f}" if measured_power is not None else "--"
                 temp_tm1_val = None
+                # V_total_required might not be defined if pwm_final_sent is 0 due to an early exit condition
+                current_V_total_required = locals().get('V_total_required', None)
+
                 if temps_arduino.size == 5 and temps_arduino[2] is not None and temps_arduino[2] > -1:
                     temp_tm1_val = temps_arduino[2]
                 temp_tm1_str = f"{temp_tm1_val:.1f}" if temp_tm1_val is not None else "--"
@@ -1278,17 +1342,23 @@ class DataCollectionUI:
                         r_heater_str = f"{R_heater:.2f}"
 
                 pwm_perc_str = f"{int(round(pwm_final_sent/255*100))}%"
-                rds_on_str = f"{rds_on:.3f}" # Display Rds(on) used in calculation
+                rds_on_str = f"{rds_on:.3f}" 
 
                 # Construct the 3-line status text
                 line1 = f"P Tgt(Htr): {target_power_w:.1f}W Act(Tot): {measured_total_power_str}W"
                 line2 = f"T1: {temp_tm1_str}°C Rh: {r_heater_str}Ω Rds: {rds_on_str}Ω"
-                line3 = f"PWM: {pwm_perc_str} ({pwm_final_sent}) VtotReq: {V_total_required:.2f}V" if 'V_total_required' in locals() else f"PWM: {pwm_perc_str} ({pwm_final_sent})"
+                
+                line3_parts = [f"PWM: {pwm_perc_str} ({pwm_final_sent})"]
+                if current_V_total_required is not None and pwm_final_sent > 0 : # Show V_total_required if it was calculated and relevant
+                    line3_parts.append(f"VReq: {current_V_total_required:.2f}V")
+                if self.invert_pwm_var.get():
+                    line3_parts.append(f"Sent: {self._apply_pwm_inversion(pwm_final_sent)}")
+                line3 = " ".join(line3_parts)
                 status_text_to_display = f"{line1}\n{line2}\n{line3}"
                 self.master.after(0, self.corrected_power_status_label.config, {"text": status_text_to_display})
                 last_ui_update_time = time.time()
             time.sleep(self.pid_control_interval / 2)
-        print("[CorrectedDirectPwrLoop] Corrected Direct Power loop finished.")
+        # print("[CorrectedDirectPwrLoop] Corrected Direct Power loop finished.")
 
     def get_resistance_from_equation(self, temperature_celsius, param_A, param_B, param_C):
         """Calculates resistance using R(T) = A * exp(B*T) + C."""
@@ -1326,7 +1396,8 @@ class DataCollectionUI:
                 self.current_pwm_setting_0_255 = self._calculate_pwm_actual(percentage)
                 self.pwm_label_display.config(text=f"PWM: {percentage}%")
                 if self.arduino and self.arduino.running:
-                    self.arduino.control_arduino(self.current_pwm_setting_0_255)
+                    final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
+                    self.arduino.control_arduino(final_pwm_to_send)
                 else:
                     messagebox.showerror("Error", "Arduino not connected for Manual PWM recording.")
                     return
@@ -1353,6 +1424,11 @@ class DataCollectionUI:
                 if rds_on_val < 0:
                     messagebox.showerror("Error", "Corrected Direct Power: MOSFET Rds(on) must be non-negative.")
                     return
+                v_supply_max_pwm_val = self.nominal_supply_voltage_var.get()
+                if v_supply_max_pwm_val <= 0:
+                    messagebox.showerror("Error", "Corrected Direct Power: Nominal Supply Voltage (V_supply_max_pwm) must be positive.")
+                    return
+
             except tk.TclError:
                 messagebox.showerror("Error", "Corrected Direct Power: Invalid equation parameter(s).")
                 return
@@ -1437,7 +1513,8 @@ class DataCollectionUI:
         # If manual PWM was used for recording, set PWM to 0. PID modes continue.
         if self.active_recording_control_mode == "MANUAL_PWM":
             if self.arduino and self.arduino.running:
-                self.arduino.control_arduino(0)
+                effective_zero_pwm = self._apply_pwm_inversion(0)
+                self.arduino.control_arduino(effective_zero_pwm)
         # UI timer thread is daemon, will stop.
 
         # Restart pre-recording display if devices are still connected
@@ -1558,7 +1635,8 @@ class DataCollectionUI:
             try:                
                 if self.active_recording_control_mode == "MANUAL_PWM":
                     if self.arduino and self.arduino.running:
-                         self.arduino.control_arduino(self.current_pwm_setting_0_255)
+                         final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
+                         self.arduino.control_arduino(final_pwm_to_send)
                 
                 voltage_val, current_val = None, None 
                 temperature_array = np.array([-1.0]*5) # Default if Arduino read fails or not connected
@@ -1774,6 +1852,9 @@ class DataCollectionUI:
         self.eq_B_entry.config(state=tk.DISABLED)
         self.eq_C_entry.config(state=tk.DISABLED) # Disable Param C entry
         self.rds_on_entry.config(state=tk.DISABLED) # Disable Rds(on) entry
+        self.nominal_supply_voltage_entry.config(state=tk.DISABLED) # Disable V_supply_max_pwm entry
+        if hasattr(self, 'pwm_invert_checkbox'):
+            self.pwm_invert_checkbox.config(state=tk.DISABLED)
 
         self.rec_manual_pwm_radio.config(state=tk.DISABLED)
         self.rec_corrected_direct_power_radio.config(state=tk.DISABLED)
@@ -1799,7 +1880,8 @@ class DataCollectionUI:
         # 2. Stop Heating (explicitly set PWM to 0 after PIDs are handled)
         # This ensures PWM is set to 0 even if no PID was active, or as a final confirmation.
         if self.arduino and self.arduino.running:
-            self.arduino.control_arduino(0) # Send PWM 0 command to Arduino
+            pwm_for_estop = self._apply_pwm_inversion(0)
+            self.arduino.control_arduino(pwm_for_estop) # Send effective PWM 0 command
             self.current_pwm_setting_0_255 = 0 # Update internal PWM state
             self.pwm_percentage_var.set(0) # Update UI variable for PWM percentage
             if hasattr(self, 'pwm_label_display') and self.pwm_label_display.winfo_exists(): # Update UI display

@@ -101,7 +101,7 @@ try:
             plt.scatter(T_data, R_data, label='實驗數據 (TH)', s=10, color='blue', alpha=0.5)
             
             # Generate T values for the fitted curve for a smoother plot
-            T_smooth = np.linspace(T_data.min(), T_data.max(), 500)
+            T_smooth = np.linspace(0, T_data.max(), 500)
             R_fitted = resistance_model(T_smooth, A_opt, B_opt, C_opt)
             
             plt.plot(T_smooth, R_fitted, label=f'擬合曲線\nR(T) = {A_opt:.2f}*exp({B_opt:.4f}*T) + {C_opt:.2f}\n$R^2={r_squared:.4f}$', color='red')
