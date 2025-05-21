@@ -31,7 +31,7 @@ class SimplePID:
         self._last_input = 0.0 # For derivative on measurement
 
         self.output = 0.0 # Store last output
-
+        self._last_output = 0.0 # Store last output for logging if needed
     def update(self, current_value):
         now = time.time()
         time_change = now - self._last_time
@@ -39,38 +39,40 @@ class SimplePID:
         # print(f"[PID_UPDATE] Called. current_value={current_value}, time_change={time_change:.4f}s, sample_time={self.sample_time}")
 
         if current_value is None: # Cannot compute if current_value is invalid
-            # print("[PID_UPDATE] current_value is None, returning last output.")
+            print("[PID_UPDATE] current_value is None, returning last output.") # Added print
             return self.output # Return last known good output or 0
 
         if time_change >= self.sample_time:
             # print(f"[PID_UPDATE] Time to update. Last update was {time_change:.4f}s ago.")
             error = float(self.setpoint) - float(current_value)
             print(f"[PID_UPDATE] Setpoint={self.setpoint}, CurrentValue={current_value}, Error={error:.4f}")
+            
+            # Store values before calculation for logging
+            integral_before_clamp = self._integral
 
             # Proportional term
             p_term = self.Kp * error
-            # print(f"[PID_UPDATE] P_Term (Kp={self.Kp} * Error={error:.4f}) = {p_term:.4f}")
+            print(f"[PID_UPDATE] P_Term (Kp={self.Kp} * Error={error:.4f}) = {p_term:.4f}") # Added print
 
             # Integral term (with anti-windup)
             integral_change = self.Ki * error * time_change # Use actual time_change
             self._integral += self.Ki * error * time_change # Use actual time_change
-            # print(f"[PID_UPDATE] Integral_Change (Ki={self.Ki} * Error={error:.4f} * TC={time_change:.4f}) = {integral_change:.4f}")
-            # print(f"[PID_UPDATE] Integral before clamp: {self._integral:.4f}")
+            print(f"[PID_UPDATE] Integral_Change (Ki={self.Ki} * Error={error:.4f} * TC={time_change:.4f}) = {integral_change:.4f}") # Added print
+            print(f"[PID_UPDATE] Integral before clamp: {self._integral:.4f}") # Added print
             self._integral = max(self.integral_min, min(self._integral, self.integral_max))
-            # print(f"[PID_UPDATE] Integral after clamp ({self.integral_min}, {self.integral_max}): {self._integral:.4f}")
+            print(f"[PID_UPDATE] Integral after clamp ({self.integral_min}, {self.integral_max}): {self._integral:.4f}") # Added print
             i_term = self._integral
-            # print(f"[PID_UPDATE] I_Term = {i_term:.4f}")
+            print(f"[PID_UPDATE] I_Term = {i_term:.4f}") # Added print
 
             # Derivative term (on measurement to reduce derivative kick)
             input_change = float(current_value) - self._last_input
-            # print(f"[PID_UPDATE] InputChange (Current={current_value} - LastInput={self._last_input}) = {input_change:.4f}")
+            print(f"[PID_UPDATE] InputChange (Current={current_value} - LastInput={self._last_input}) = {input_change:.4f}") # Added print
             d_term = 0.0
             if time_change > 0:
                 d_term = -self.Kd * (input_change / time_change)
-                # print(f"[PID_UPDATE] D_Term (-Kd={-self.Kd} * InChg={input_change:.4f} / TC={time_change:.4f}) = {d_term:.4f}")
+                print(f"[PID_UPDATE] D_Term (-Kd={-self.Kd} * InChg={input_change:.4f} / TC={time_change:.4f}) = {d_term:.4f}") # Added print
             else:
-                # print(f"[PID_UPDATE] D_Term = 0 (time_change <= 0)")
-                pass # Added pass to make the else block valid
+                print(f"[PID_UPDATE] D_Term = 0 (time_change <= 0)") # Added print
             self.output = p_term + i_term + d_term
             # print(f"[PID_UPDATE] Output before clamp (P={p_term:.4f} + I={i_term:.4f} + D={d_term:.4f}) = {self.output:.4f}")
             self.output = max(self.output_min, min(self.output, self.output_max))
@@ -79,8 +81,10 @@ class SimplePID:
             self._last_error = error
             self._last_time = now
             self._last_input = float(current_value)
+            self._last_output = self.output # Store the output after clamping
             return self.output
-        # print(f"[PID_UPDATE] Not time to update yet (time_change={time_change:.4f}s < sample_time={self.sample_time}). Returning last output: {self.output}")
+        else: # Added else block for clarity
+             print(f"[PID_UPDATE] Not time to update yet (time_change={time_change:.4f}s < sample_time={self.sample_time}). Returning last output: {self.output}") # Added print
         return self.output # Not time to update yet, return last output
 
     def set_tunings(self, Kp, Ki, Kd):
@@ -112,6 +116,10 @@ class DataCollectionUI:
     ARDUINO_COM_PORT = "COM3"
     ARDUINO_BAUDRATE = 9600
 
+    # --- Power Verification Constants ---
+    MAX_ZEROING_ATTEMPTS = 3
+    POWER_ZERO_THRESHOLD = 0.5  # Watts
+
     # --- Default UI Values ---
     DEFAULT_STEAK_TYPE = "test_steak"
     DEFAULT_PWM_PERCENTAGE = 0
@@ -120,7 +128,7 @@ class DataCollectionUI:
     DEFAULT_PID_KI = 0.1
     DEFAULT_PID_KD = 0.5
     DEFAULT_POWER_PID_SETPOINT = 20.0 # Target Watts (Power PID)
-    DEFAULT_POWER_PID_KP = 4.5      # Slightly reduced Kp
+    DEFAULT_POWER_PID_KP = 3.0      # Slightly reduced Kp
     DEFAULT_POWER_PID_KI = 0.3     # Slightly reduced Ki
     DEFAULT_POWER_PID_KD = 0.1     # Significantly increased Kd to counteract undershoot
     DEFAULT_R_REF = 1.0 # Default reference resistance if file not loaded   
@@ -191,8 +199,8 @@ class DataCollectionUI:
         self.active_recording_control_mode = "MANUAL_PWM" # Stores the mode active when recording started        
         # Removed self.temp_resist_filename_var
         self.pwm_percentage_var = tk.IntVar(value=self.DEFAULT_PWM_PERCENTAGE)
-        self.steak_type_var = tk.StringVar(value=self.DEFAULT_STEAK_TYPE)
-        self.invert_pwm_var = tk.BooleanVar(value=False) # For PWM inversion
+        self.steak_type_var = tk.StringVar(value=self.DEFAULT_STEAK_TYPE) # For PWM inversion
+        self.invert_pwm_var = tk.BooleanVar(value=True) # For PWM inversion
 
         # Internal state for PWM
         self.current_pwm_setting_0_255 = self._calculate_pwm_actual(self.pwm_percentage_var.get()) # Actual PWM value (0-255) for Arduino
@@ -754,13 +762,11 @@ class DataCollectionUI:
                 self.pre_recording_display_thread = threading.Thread(target=self.run_pre_recording_display_loop, daemon=True)
                 self.pre_recording_display_thread.start()
 
-            # Enable control mode radio buttons
+            # Enable UI elements
             self.manual_pwm_radio.config(state=tk.NORMAL)
             self.pid_preheat_radio.config(state=tk.NORMAL)
             self.pid_power_radio.config(state=tk.NORMAL)
             self.corrected_direct_power_radio.config(state=tk.NORMAL)
-            # Equation parameter entries are enabled by _handle_control_mode_change
-            # self.load_tr_file_button.config(state=tk.NORMAL) # Removed
 
             # Enable recording control mode radio buttons
             self.rec_manual_pwm_radio.config(state=tk.NORMAL)
@@ -769,14 +775,69 @@ class DataCollectionUI:
             if hasattr(self, 'pwm_invert_checkbox'):
                 self.pwm_invert_checkbox.config(state=tk.NORMAL)
 
+            # Verify and set initial PWM to 0 (logical)
+            self.update_status("Connect: Verifying zero power output...")
+            power_confirmed_zero_on_connect = False
+            if self.arduino and self.arduino.running:
+                for attempt in range(self.MAX_ZEROING_ATTEMPTS):
+                    logical_pwm_value_for_zero = 0
+                    self.pwm_percentage_var.set(0)
+                    self.current_pwm_setting_0_255 = logical_pwm_value_for_zero
+                    final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
+                    self.arduino.control_arduino(final_pwm_to_send)
+                    if hasattr(self, 'pwm_label_display') and self.pwm_label_display.winfo_exists():
+                        self.pwm_label_display.config(text="PWM: 0%")
+                    
+                    self.update_status(f"Connect: Attempt {attempt + 1}/{self.MAX_ZEROING_ATTEMPTS} - Sent logical PWM 0 (Actual: {final_pwm_to_send}). Checking power...")
+                    time.sleep(0.75) # Allow system to stabilize
+
+                    measured_power_on_connect = float('inf')
+                    voltage_val_conn, current_val_conn = None, None
+                    power_read_successful_conn = False
+
+                    if self.voltage_meter and self.current_meter:
+                        try:
+                            v_list = self.voltage_meter.read_voltage()
+                            if v_list: voltage_val_conn = v_list[0]
+                            c_list = self.current_meter.read_current()
+                            if c_list: current_val_conn = c_list[0]
+
+                            if voltage_val_conn is not None and current_val_conn is not None:
+                                measured_power_on_connect = float(voltage_val_conn) * float(current_val_conn)
+                                power_read_successful_conn = True
+                                self.update_status(f"Connect: Attempt {attempt + 1} - Measured power: {measured_power_on_connect:.2f}W")
+                            else:
+                                self.update_status(f"Connect: Attempt {attempt + 1} - Could not get V/I readings.")
+                        except pyvisa.errors.VisaIOError as ve:
+                            self.update_status(f"Connect: Attempt {attempt + 1} - VISA error reading power: {ve}")
+                        except Exception as e:
+                            self.update_status(f"Connect: Attempt {attempt + 1} - Error reading power: {e}")
+                    else:
+                        self.update_status(f"Connect: Attempt {attempt + 1} - Meters not available to check power.")
+
+                    if power_read_successful_conn and measured_power_on_connect < self.POWER_ZERO_THRESHOLD:
+                        self.update_status(f"Connect: Power confirmed near zero ({measured_power_on_connect:.2f}W). PWM inversion is {self.invert_pwm_var.get()}.")
+                        power_confirmed_zero_on_connect = True
+                        break
+                    else:
+                        if attempt < self.MAX_ZEROING_ATTEMPTS - 1:
+                            new_inversion_state = not self.invert_pwm_var.get()
+                            self.invert_pwm_var.set(new_inversion_state)
+                            self.update_status(f"Connect: Power not zero ({measured_power_on_connect:.2f}W). Flipped PWM inversion to {new_inversion_state}. Retrying...")
+                
+                if not power_confirmed_zero_on_connect:
+                    warn_msg = f"Connect: Power NOT confirmed zero after {self.MAX_ZEROING_ATTEMPTS} attempts. Last: {measured_power_on_connect:.2f}W. Please check system."
+                    self.update_status(warn_msg)
+                    messagebox.showwarning("Connection Power Warning", warn_msg)
+            
+            self.update_status(f"Devices connected. Live display active. Ready to record. Initial power zeroing: {'OK' if power_confirmed_zero_on_connect else 'CHECK MANUALLY'}")
+
             self._handle_control_mode_change() # Update UI based on current (default) mode
             self.emergency_stop_button.config(state=tk.NORMAL) # Enable E-Stop
             time.sleep(1) # Short delay to allow first data to potentially arrive for display
 
             self.start_button.config(state=tk.NORMAL)
             self.connect_button.config(state=tk.DISABLED)
-            self.update_status("Devices connected. Live display active. Ready to record.")
-
         except Exception as e:
             self.close_devices() # Ensure any partially opened devices are closed
             error_msg = f"Connection failed: {e}"
@@ -1819,6 +1880,17 @@ class DataCollectionUI:
 
         if self.arduino:
             try:
+                if self.arduino.running: # Check if it was running before trying to send command
+                    # Explicitly set logical PWM to 0 considering UI inversion
+                    logical_pwm_off = 0 # This is the 0-255 value for "off" before inversion
+                    pwm_signal_to_send_off = self._apply_pwm_inversion(logical_pwm_off)
+                    self.arduino.control_arduino(pwm_signal_to_send_off)
+                    self.current_pwm_setting_0_255 = 0 # Update internal state
+                    self.pwm_percentage_var.set(0)    # Update UI var
+                    if hasattr(self, 'pwm_label_display') and self.pwm_label_display.winfo_exists():
+                        self.pwm_label_display.config(text="PWM: 0%")
+                    print(f"[UI_CloseDevices] Logical PWM set to 0 (Sent to Arduino: {pwm_signal_to_send_off}) before closing port.")
+                
                 self.arduino.close()
                 self.update_status("Arduino disconnected.")
             except Exception as e:
@@ -1877,15 +1949,80 @@ class DataCollectionUI:
         if self.corrected_direct_power_active:
             self.stop_corrected_direct_power()
 
-        # 2. Stop Heating (explicitly set PWM to 0 after PIDs are handled)
-        # This ensures PWM is set to 0 even if no PID was active, or as a final confirmation.
+        # 2. Stop Heating: Attempt to set PWM to 0 and verify power, retrying with inversion if necessary.
         if self.arduino and self.arduino.running:
-            pwm_for_estop = self._apply_pwm_inversion(0)
-            self.arduino.control_arduino(pwm_for_estop) # Send effective PWM 0 command
-            self.current_pwm_setting_0_255 = 0 # Update internal PWM state
-            self.pwm_percentage_var.set(0) # Update UI variable for PWM percentage
-            if hasattr(self, 'pwm_label_display') and self.pwm_label_display.winfo_exists(): # Update UI display
-                 self.pwm_label_display.config(text="PWM: 0%")
+            self.update_status("E-STOP: Attempting to set PWM to zero and verify power...")
+            
+            power_confirmed_zero = False
+
+            for attempt in range(self.MAX_ZEROING_ATTEMPTS):
+                if not (self.arduino and self.arduino.running):
+                    self.update_status("E-STOP: Arduino disconnected during zeroing attempt. Aborting further PWM changes.")
+                    break
+
+                # Send logical PWM 0 command
+                logical_pwm_value_for_zero = 0
+                pwm_signal_to_send = self._apply_pwm_inversion(logical_pwm_value_for_zero)
+                self.arduino.control_arduino(pwm_signal_to_send)
+                
+                # Update internal state and UI to reflect logical 0% PWM
+                self.current_pwm_setting_0_255 = logical_pwm_value_for_zero
+                self.pwm_percentage_var.set(0)
+                if hasattr(self, 'pwm_label_display') and self.pwm_label_display.winfo_exists():
+                    self.pwm_label_display.config(text="PWM: 0%")
+                
+                self.update_status(f"E-STOP: Attempt {attempt + 1}/{self.MAX_ZEROING_ATTEMPTS} - Sent logical PWM 0 (Actual: {pwm_signal_to_send}). Checking power...")
+                time.sleep(0.75)  # Allow system to stabilize and meters to respond
+
+                measured_power = float('inf')
+                voltage_val, current_val = None, None
+                power_read_successful = False
+
+                if self.voltage_meter and self.current_meter:
+                    try:
+                        voltage_list = self.voltage_meter.read_voltage()
+                        if voltage_list: voltage_val = voltage_list[0]
+
+                        current_list = self.current_meter.read_current()
+                        if current_list: current_val = current_list[0]
+
+                        if voltage_val is not None and current_val is not None:
+                            measured_power = float(voltage_val) * float(current_val)
+                            power_read_successful = True
+                            self.update_status(f"E-STOP: Attempt {attempt + 1} - Measured power: {measured_power:.2f}W")
+                        else:
+                            self.update_status(f"E-STOP: Attempt {attempt + 1} - Could not get valid V/I readings.")
+                    except pyvisa.errors.VisaIOError as ve:
+                        self.update_status(f"E-STOP: Attempt {attempt + 1} - VISA error reading power: {ve}")
+                    except Exception as e:
+                        self.update_status(f"E-STOP: Attempt {attempt + 1} - Error reading power: {e}")
+                else:
+                    self.update_status(f"E-STOP: Attempt {attempt + 1} - Meters not available to check power.")
+
+                if power_read_successful and measured_power < self.POWER_ZERO_THRESHOLD:
+                    self.update_status(f"E-STOP: Power confirmed near zero ({measured_power:.2f}W). PWM inversion is {self.invert_pwm_var.get()}.")
+                    power_confirmed_zero = True
+                    break  # Power is off
+                else:
+                    if attempt < self.MAX_ZEROING_ATTEMPTS - 1:
+                        current_inversion_state = self.invert_pwm_var.get()
+                        new_inversion_state = not current_inversion_state
+                        self.invert_pwm_var.set(new_inversion_state) # This will also update the checkbox
+                        self.update_status(f"E-STOP: Power not zero ({measured_power:.2f}W). Flipped PWM inversion to {new_inversion_state}. Retrying...")
+                    # If it's the last attempt, the loop will end, and the final warning will be shown outside.
+            
+            if not power_confirmed_zero:
+                warning_message = f"E-STOP: Power NOT confirmed zero after {self.MAX_ZEROING_ATTEMPTS} attempts. "
+                if power_read_successful:
+                    warning_message += f"Last measured: {measured_power:.2f}W. "
+                else:
+                    warning_message += "Could not read power. "
+                warning_message += f"Final PWM inversion state: {self.invert_pwm_var.get()}. Please check system manually!"
+                self.update_status(warning_message)
+                messagebox.showwarning("E-Stop Warning", warning_message)
+
+        elif not (self.arduino and self.arduino.running):
+            self.update_status("E-STOP: Arduino not connected. Cannot send PWM commands or verify power via PWM.")
 
         # 3. Handle Recording (if active)
         was_recording = self.recording
