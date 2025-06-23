@@ -9,7 +9,71 @@ import matplotlib.pyplot as plt
 import pyvisa # For specific VISA error handling
 import control_meter as cm
 import control_arduino as ca
-import serial
+import serial.tools.list_ports # For listing COM ports
+
+# --- Mock/Debug Classes ---
+class MockControlArduino:
+    """A mock class for control_arduino for UI testing without hardware."""
+    def __init__(self, ui_instance):
+        self.ui = ui_instance # Reference to the UI to get inversion state
+        self.running = True
+        self.raw_pwm_sent = 0
+        self.temps = np.array([25.0, 24.8, 25.2, 25.1, 24.9])
+        self.last_temp_update_time = time.time()
+        print("[MockArduino] Initialized.")
+
+    def get_logical_pwm(self):
+        if self.ui.invert_pwm_var.get():
+            return 255 - self.raw_pwm_sent
+        return self.raw_pwm_sent
+
+    def control_arduino(self, pwm_value):
+        self.raw_pwm_sent = int(pwm_value)
+
+    def return_temperature(self):
+        now = time.time()
+        time_delta = now - self.last_temp_update_time
+        
+        logical_pwm = self.get_logical_pwm()
+        heating_rate = (logical_pwm / 255.0) * 0.5 
+        cooling_rate = 0.1
+        
+        temp_change = (heating_rate - cooling_rate) * time_delta
+        
+        self.temps += temp_change
+        self.temps = np.clip(self.temps, 20, 300)
+        self.last_temp_update_time = now
+        
+        return self.temps + np.random.normal(0, 0.05, 5)
+
+    def close(self):
+        self.running = False
+        print("[MockArduino] Closed.")
+
+class MockControlMeter:
+    """A mock class for control_meter for UI testing without hardware."""
+    def __init__(self, mock_arduino_instance):
+        self.mock_arduino = mock_arduino_instance
+        self.simulated_resistance = 20.0 # ohms
+        print("[MockMeter] Initialized.")
+
+    def connect(self, resource_string): print(f"[MockMeter] 'Connected' to {resource_string}")
+    def close(self): print("[MockMeter] 'Closed'")
+    def set_voltage_mode(self): pass
+    def set_current_mode(self): pass
+
+    def read_voltage(self):
+        logical_pwm = self.mock_arduino.get_logical_pwm()
+        v_supply = 30.0 - (logical_pwm / 255.0) * 1.5
+        voltage = v_supply * (logical_pwm / 255.0)
+        return [voltage + np.random.normal(0, 0.02)]
+
+    def read_current(self):
+        voltage = self.read_voltage()[0]
+        current = voltage / self.simulated_resistance
+        return [current + np.random.normal(0, 0.01)]
+
+# --- End Mock/Debug Classes ---
 
 # --- PID Controller Class ---
 class SimplePID:
@@ -111,9 +175,9 @@ class SimplePID:
 # --- End PID Controller Class ---
 class DataCollectionUI:
     # --- Constants for Device Configuration ---
-    VOLTAGE_METER_ADDRESS = "ASRL11::INSTR"
-    CURRENT_METER_ADDRESS = "ASRL4::INSTR"
-    ARDUINO_COM_PORT = "COM3"
+    DEFAULT_VOLTAGE_METER_ADDRESS = "ASRL11::INSTR"
+    DEFAULT_CURRENT_METER_ADDRESS = "ASRL4::INSTR"
+    DEFAULT_ARDUINO_COM_PORT = "COM3"
     ARDUINO_BAUDRATE = 9600
 
     # --- Power Verification Constants ---
@@ -191,22 +255,27 @@ class DataCollectionUI:
         self.pid_ki_var = tk.DoubleVar(value=self.DEFAULT_PID_KI)
         self.pid_kd_var = tk.DoubleVar(value=self.DEFAULT_PID_KD)
         self.power_pid_setpoint_var = tk.DoubleVar(value=self.DEFAULT_POWER_PID_SETPOINT)
-        self.power_pid_kp_var = tk.DoubleVar(value=self.DEFAULT_POWER_PID_KP)
-        self.power_pid_ki_var = tk.DoubleVar(value=self.DEFAULT_POWER_PID_KI)
-        self.power_pid_kd_var = tk.DoubleVar(value=self.DEFAULT_POWER_PID_KD)
-        self.control_mode_var = tk.StringVar(value="MANUAL_PWM") # Modes: MANUAL_PWM, PID_PREHEAT, PID_POWER, CORRECTED_DIRECT_POWER
-        self.recording_control_mode_var = tk.StringVar(value="MANUAL_PWM") 
-        self.active_recording_control_mode = "MANUAL_PWM" # Stores the mode active when recording started        
+        self.power_pid_kp_var = tk.DoubleVar(value=self.DEFAULT_POWER_PID_KP) 
+        self.power_pid_ki_var = tk.DoubleVar(value=self.DEFAULT_POWER_PID_KI) 
+        self.power_pid_kd_var = tk.DoubleVar(value=self.DEFAULT_POWER_PID_KD) 
+        self.control_mode_var = tk.StringVar(value="MANUAL_PWM") # Modes: MANUAL_PWM, PID_PREHEAT, PID_POWER, CORRECTED_DIRECT_POWER 
         # Removed self.temp_resist_filename_var
         self.pwm_percentage_var = tk.IntVar(value=self.DEFAULT_PWM_PERCENTAGE)
+        # Port/Address StringVars
+        self.arduino_port_var = tk.StringVar(value=self.DEFAULT_ARDUINO_COM_PORT)
+        self.voltage_meter_address_var = tk.StringVar(value=self.DEFAULT_VOLTAGE_METER_ADDRESS)
+        self.current_meter_address_var = tk.StringVar(value=self.DEFAULT_CURRENT_METER_ADDRESS)
+
         self.steak_type_var = tk.StringVar(value=self.DEFAULT_STEAK_TYPE) # For PWM inversion
         self.invert_pwm_var = tk.BooleanVar(value=True) # For PWM inversion
+        self.debug_mode_var = tk.BooleanVar(value=False) # For debug mode
 
         # Internal state for PWM
         self.current_pwm_setting_0_255 = self._calculate_pwm_actual(self.pwm_percentage_var.get()) # Actual PWM value (0-255) for Arduino
+        self.last_active_pwm_0_255 = 0 # Stores the last PWM value (0-255) sent by any controller
 
         # Configuration
-        self.pre_recording_display_interval = 0.5 # seconds for display update when not recording or preheating
+        self.pre_recording_display_interval = 1.0 # seconds for display update when not recording or preheating
         self.pid_control_interval = 0.2 # seconds for PID control loop
         self.sample_interval = 0.01 # seconds
 
@@ -246,7 +315,6 @@ class DataCollectionUI:
         self._setup_power_pid_controls() 
 
         # Right Column
-        self._setup_recording_control_mode_selection() # New: Recording Control Mode
         self._setup_recording_controls()
         self._setup_steak_type_input()
         self._setup_action_controls()
@@ -260,17 +328,80 @@ class DataCollectionUI:
         self.reset_realtime_display() # Initialize display fields
         master.protocol("WM_DELETE_WINDOW", self.on_closing) # Handle window close event
         self._handle_control_mode_change() # Set initial UI state based on default mode
-        self._handle_recording_control_mode_change() # Set initial UI state for recording controls
         self.update_status("Disconnected. Press 'Connect Devices'.")
 
     # --- UI Setup Helper Methods ---
     def _setup_connection_controls(self):
         """Sets up the device connection button."""
         # Connection Frame
-        self.connection_frame = ttk.LabelFrame(self.left_column_frame, text="Device Connection")
+        self.connection_frame = ttk.LabelFrame(self.left_column_frame, text="Device Connection & Ports")
         self.connection_frame.pack(pady=(0, 5), padx=5, fill="x")
+
+        # --- Arduino Port Selection ---
+        ttk.Label(self.connection_frame, text="Arduino Port:").grid(row=0, column=0, padx=5, pady=2, sticky=tk.W)
+        available_com_ports = [port.device for port in serial.tools.list_ports.comports()]
+        if not available_com_ports:
+            available_com_ports = [self.arduino_port_var.get()] # Show default if none found
+        elif self.arduino_port_var.get() not in available_com_ports:
+             # If default is not in list, add it to the list and make it the first item
+             # Or, simply let it be; Combobox will show first available if default isn't there.
+             # For now, let's ensure the default is an option if it was set.
+             pass # The StringVar holds the default, Combobox will try to match.
+
+        self.arduino_port_combobox = ttk.Combobox(self.connection_frame, textvariable=self.arduino_port_var,
+                                                 values=available_com_ports, width=18, state='readonly')
+        if self.arduino_port_var.get() not in available_com_ports and available_com_ports:
+            # If the default port is not in the list of available_com_ports,
+            # set the var to the first available port to avoid blank Combobox.
+            # However, the StringVars are already initialized with defaults.
+            # If the default isn't available, the combobox will show the first item from 'values'.
+            # The user's default value in the StringVar will persist until they pick something.
+            pass
+        elif not available_com_ports: # No ports found at all
+            self.arduino_port_combobox.set("No COM ports") # Placeholder
+            self.arduino_port_combobox.config(values=["No COM ports"])
+
+        self.arduino_port_combobox.grid(row=0, column=1, padx=5, pady=2, sticky=tk.EW)
+
+        # --- VISA Resource (Meter) Selection ---
+        available_visa_resources = []
+        try:
+            rm = pyvisa.ResourceManager()
+            available_visa_resources = list(rm.list_resources())
+            rm.close() # Close resource manager after listing
+        except Exception as e:
+            print(f"Error listing VISA resources: {e}")
+            # Add default values to the list if VISA listing fails, so they appear in dropdown
+            if self.DEFAULT_VOLTAGE_METER_ADDRESS not in available_visa_resources:
+                available_visa_resources.append(self.DEFAULT_VOLTAGE_METER_ADDRESS)
+            if self.DEFAULT_CURRENT_METER_ADDRESS not in available_visa_resources:
+                available_visa_resources.append(self.DEFAULT_CURRENT_METER_ADDRESS)
+            available_visa_resources = sorted(list(set(available_visa_resources))) # Ensure unique and sorted
+
+        if not available_visa_resources: # If list is still empty
+            available_visa_resources = ["No VISA resources"]
+
+        # Arduino Port
+        # Voltage Meter Address
+        ttk.Label(self.connection_frame, text="Voltage Meter:").grid(row=1, column=0, padx=5, pady=2, sticky=tk.W)
+        self.voltage_meter_address_combobox = ttk.Combobox(self.connection_frame, textvariable=self.voltage_meter_address_var,
+                                                          values=available_visa_resources, width=18, state='readonly')
+        self.voltage_meter_address_combobox.grid(row=1, column=1, padx=5, pady=2, sticky=tk.EW)
+        # Current Meter Address
+        ttk.Label(self.connection_frame, text="Current Meter:").grid(row=2, column=0, padx=5, pady=2, sticky=tk.W)
+        self.current_meter_address_combobox = ttk.Combobox(self.connection_frame, textvariable=self.current_meter_address_var,
+                                                          values=available_visa_resources, width=18, state='readonly')
+        self.current_meter_address_combobox.grid(row=2, column=1, padx=5, pady=2, sticky=tk.EW)
+        # Connect Button
         self.connect_button = tk.Button(self.connection_frame, text="Connect Devices", command=self.connect_devices)
-        self.connect_button.pack(pady=5, padx=5, fill="x", expand=True)
+        self.connect_button.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+
+        # Debug Mode Checkbox
+        self.debug_mode_checkbox = ttk.Checkbutton(self.connection_frame, text="Debug Mode (No Hardware)", variable=self.debug_mode_var)
+        self.debug_mode_checkbox.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+
+        self.connection_frame.grid_columnconfigure(1, weight=1) # Allow entry fields to expand
+
 
     def _setup_realtime_display(self):
         """Sets up the labels for displaying real-time data."""
@@ -336,8 +467,11 @@ class DataCollectionUI:
         self.set_pwm_button = ttk.Button(self.pwm_frame, text="Set PWM", command=self.set_pwm_from_entry, state=tk.DISABLED)
         self.set_pwm_button.grid(row=0, column=3, padx=5, pady=3, sticky="ew")
 
-        self.set_pwm_zero_button = ttk.Button(self.pwm_frame, text="Set to 0", command=self.set_pwm_to_zero, state=tk.DISABLED)
-        self.set_pwm_zero_button.grid(row=0, column=4, padx=5, pady=3, sticky="ew")
+        self.set_pwm_zero_button = ttk.Button(self.pwm_frame, text="Set to 0%", command=self.set_pwm_to_zero, state=tk.DISABLED)
+        self.set_pwm_zero_button.grid(row=0, column=4, padx=5, pady=3, sticky="ew") # Changed column to 4
+
+        self.set_pwm_hundred_button = ttk.Button(self.pwm_frame, text="Set to 100%", command=self.set_pwm_to_hundred, state=tk.DISABLED)
+        self.set_pwm_hundred_button.grid(row=0, column=5, padx=5, pady=3, sticky="ew") # New button in column 5
 
         # Row 1: Invert PWM Checkbox
         self.pwm_invert_checkbox = ttk.Checkbutton(self.pwm_frame, text="Invert PWM Output", variable=self.invert_pwm_var, state=tk.DISABLED)
@@ -349,6 +483,7 @@ class DataCollectionUI:
         self.pwm_frame.grid_columnconfigure(1, weight=0) # Entry/Button column
         self.pwm_frame.grid_columnconfigure(2, weight=0) # Range Label/Button column
         self.pwm_frame.grid_columnconfigure(3, weight=1) # Button column
+        self.pwm_frame.grid_columnconfigure(4, weight=1) # Button column (for Set to 0%)
         self.pwm_frame.grid_columnconfigure(4, weight=1) # Button column
 
 
@@ -477,26 +612,6 @@ class DataCollectionUI:
         self.power_pid_frame.grid_columnconfigure(1, weight=0)
         self.power_pid_frame.grid_columnconfigure(2, weight=1)
 
-    def _setup_recording_control_mode_selection(self):
-        """Sets up radio buttons for selecting control mode during recording."""
-        self.recording_mode_frame = ttk.LabelFrame(self.right_column_frame, text="Recording Control Mode")
-        self.recording_mode_frame.pack(pady=(0, 5), padx=5, fill="x")
-
-        radio_button_container = ttk.Frame(self.recording_mode_frame)
-        radio_button_container.pack(pady=2)
-
-        self.rec_manual_pwm_radio = ttk.Radiobutton(radio_button_container, text="Manual PWM", variable=self.recording_control_mode_var, # Default
-                                                 value="MANUAL_PWM", command=self._handle_recording_control_mode_change, state=tk.DISABLED)
-        self.rec_manual_pwm_radio.pack(side=tk.LEFT, padx=5, pady=2)
-
-        self.rec_pid_power_radio = ttk.Radiobutton(radio_button_container, text="PID Power", variable=self.recording_control_mode_var,
-                                                value="PID_POWER", command=self._handle_recording_control_mode_change, state=tk.DISABLED)
-        self.rec_pid_power_radio.pack(side=tk.LEFT, padx=5, pady=2)
-        
-        self.rec_corrected_direct_power_radio = ttk.Radiobutton(radio_button_container, text="Corrected Power (Eqn)", variable=self.recording_control_mode_var,
-                                                        value="CORRECTED_DIRECT_POWER", command=self._handle_recording_control_mode_change, state=tk.DISABLED)
-        self.rec_corrected_direct_power_radio.pack(side=tk.LEFT, padx=5, pady=2)
-
     def _setup_recording_controls(self):
         """Sets up the Start/Stop recording buttons."""
         # Recording Control Frame
@@ -558,13 +673,15 @@ class DataCollectionUI:
         selected_mode = self.control_mode_var.get()
         self.update_status(f"Control mode changed to: {selected_mode}")
 
-        # Stop any active PID controllers if switching away from them
+        # Stop any active controllers if switching away from them.
+        # Pass set_pwm_to_zero=False to allow for a seamless handover of PWM control
+        # without turning the heater off momentarily.
         if selected_mode != "PID_PREHEAT" and self.preheating_active:
-            self.stop_preheat()
+            self.stop_preheat(set_pwm_to_zero=False)
         if selected_mode != "PID_POWER" and self.power_pid_active:
-            self.stop_power_pid()
+            self.stop_power_pid(set_pwm_to_zero=False)
         if selected_mode != "CORRECTED_DIRECT_POWER" and self.corrected_direct_power_active:
-            self.stop_corrected_direct_power()
+            self.stop_corrected_direct_power(set_pwm_to_zero=False)
 
         # --- Enable/Disable Manual PWM Controls ---
         is_manual_mode = (selected_mode == "MANUAL_PWM")
@@ -575,8 +692,16 @@ class DataCollectionUI:
         self.pwm_entry.config(state=pwm_general_controls_state)
         self.set_pwm_button.config(state=manual_pwm_button_state)
         self.set_pwm_zero_button.config(state=manual_pwm_button_state)
+        self.set_pwm_hundred_button.config(state=manual_pwm_button_state) # New: control state of "Set to 100%" button
         if hasattr(self, 'pwm_invert_checkbox'): # Ensure checkbox exists
             self.pwm_invert_checkbox.config(state=pwm_general_controls_state)
+
+        if is_manual_mode and self.arduino and self.arduino.running:
+            # When switching TO manual mode, update the entry box with the last known PWM value.
+            # The handover is seamless because the stop_... functions were called with set_pwm_to_zero=False.
+            last_pwm_percentage = round(self.last_active_pwm_0_255 / 255.0 * 100)
+            self.pwm_percentage_var.set(last_pwm_percentage)
+            self.current_pwm_setting_0_255 = self.last_active_pwm_0_255 # Also update the internal state for manual mode
 
         # --- Enable/Disable PID Preheat Controls ---
         is_preheat_mode = (selected_mode == "PID_PREHEAT")
@@ -635,12 +760,6 @@ class DataCollectionUI:
              # self.arduino.control_arduino(self.current_pwm_setting_0_255) # Applies last manual or 0 if PID was stopped
              pass
 
-    def _handle_recording_control_mode_change(self, event=None):
-        """Handles changes in the recording control mode selection."""
-        selected_recording_mode = self.recording_control_mode_var.get()
-        # This function currently doesn't need to do much beyond updating a variable,
-        # as the actual mode switch happens in start_recording.
-        # self.update_status(f"Recording mode set to: {selected_recording_mode}") # Optional: for debugging
     # Removed Temperature-Resistance File Handling methods (load_temp_resistance_file, get_resistance_at_temp)
 
     # --- PWM Inversion Helper ---
@@ -674,14 +793,18 @@ class DataCollectionUI:
             messagebox.showerror("PWM Error", "Invalid PWM percentage. Please enter a number.")
             return
 
+        # Stop other active controllers before setting manual PWM
+        if self.preheating_active: self.stop_preheat()
+        if self.power_pid_active: self.stop_power_pid()
+        if self.corrected_direct_power_active: self.stop_corrected_direct_power()
+
         if self.control_mode_var.get() != "MANUAL_PWM":
             self.control_mode_var.set("MANUAL_PWM")
-            self._handle_control_mode_change() # This will stop other PIDs
+            self._handle_control_mode_change()
 
         if self.arduino and self.arduino.running:
-            # PIDs are already stopped by _handle_control_mode_change if mode was switched
-
             self.current_pwm_setting_0_255 = self._calculate_pwm_actual(percentage)
+            self.last_active_pwm_0_255 = self.current_pwm_setting_0_255 # Update last active PWM
             self.pwm_label_display.config(text=f"PWM: {percentage}%") # Update label
             final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
             self.arduino.control_arduino(final_pwm_to_send)
@@ -696,14 +819,21 @@ class DataCollectionUI:
         Sets the PWM value to 0 and sends the command to Arduino.
         Also stops PID preheat if it's active.
         """
+        # Stop other active controllers before setting manual PWM to zero
+        if self.preheating_active: self.stop_preheat()
+        if self.power_pid_active: self.stop_power_pid()
+        if self.corrected_direct_power_active: self.stop_corrected_direct_power()
+
         if self.control_mode_var.get() != "MANUAL_PWM":
             self.control_mode_var.set("MANUAL_PWM")
-            self._handle_control_mode_change() # This will stop other PIDs
+            self._handle_control_mode_change()
 
-        self.pwm_percentage_var.set(0) # Update the Tkinter variable, which updates the Entry box
+        self.pwm_percentage_var.set(0) # Update the Tkinter variable
+        self.last_active_pwm_0_255 = 0 # Update last active PWM
 
         if self.arduino and self.arduino.running:
             self.current_pwm_setting_0_255 = self._calculate_pwm_actual(0)
+            self.last_active_pwm_0_255 = self.current_pwm_setting_0_255
             self.pwm_label_display.config(text=f"PWM: 0%") # Update label
             final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
             self.arduino.control_arduino(final_pwm_to_send) # Send 0 (or 255 if inverted) to Arduino
@@ -713,7 +843,41 @@ class DataCollectionUI:
         else:
             # Still update local state even if not connected, so UI reflects 0
             self.current_pwm_setting_0_255 = self._calculate_pwm_actual(0)
+            self.last_active_pwm_0_255 = self.current_pwm_setting_0_255
             self.pwm_label_display.config(text=f"PWM: 0%")
+            self.update_status("PWM set to 0% (0) (Arduino not connected).")
+
+    def set_pwm_to_hundred(self):
+        """
+        Sets the PWM value to 100% and sends the command to Arduino.
+        Also stops any active PID controllers.
+        """
+        # Stop other active controllers before setting manual PWM to 100
+        if self.preheating_active: self.stop_preheat()
+        if self.power_pid_active: self.stop_power_pid()
+        if self.corrected_direct_power_active: self.stop_corrected_direct_power()
+
+        if self.control_mode_var.get() != "MANUAL_PWM":
+            self.control_mode_var.set("MANUAL_PWM")
+            self._handle_control_mode_change()
+
+        self.pwm_percentage_var.set(100) # Update the Tkinter variable
+        self.last_active_pwm_0_255 = self._calculate_pwm_actual(100) # Update last active PWM
+
+        if self.arduino and self.arduino.running:
+            self.current_pwm_setting_0_255 = self._calculate_pwm_actual(100)
+            self.last_active_pwm_0_255 = self.current_pwm_setting_0_255
+            self.pwm_label_display.config(text=f"PWM: 100%") # Update label
+            final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
+            self.arduino.control_arduino(final_pwm_to_send) # Send 255 (or 0 if inverted) to Arduino
+            status_msg = f"PWM set to 100% (255). "
+            status_msg += f"Sent to Arduino: {final_pwm_to_send}" if self.invert_pwm_var.get() else f"Sent to Arduino: {self.current_pwm_setting_0_255}"
+            self.update_status(status_msg)
+        else:
+            # Still update local state even if not connected, so UI reflects 100
+            self.current_pwm_setting_0_255 = self._calculate_pwm_actual(100)
+            self.last_active_pwm_0_255 = self.current_pwm_setting_0_255
+            self.pwm_label_display.config(text=f"PWM: 100%")
             self.update_status("PWM set to 0% (0) (Arduino not connected).")
 
     def reset_realtime_display(self):
@@ -727,130 +891,185 @@ class DataCollectionUI:
 
     def connect_devices(self):
         """
-        Attempts to connect to the voltage meter, current meter, and Arduino.
+        Attempts to connect to the voltage meter, current meter, and Arduino, or uses mock devices if in debug mode.
         Updates UI based on connection status.
         """
-        self.update_status("Connecting...")
-        try:
-            # Connect to Voltage Meter
-            self.update_status(f"Connecting to Voltage Meter ({self.VOLTAGE_METER_ADDRESS})...")
-            self.voltage_meter = cm.control_meter()
-            self.voltage_meter.connect(self.VOLTAGE_METER_ADDRESS)
-            self.voltage_meter.set_voltage_mode()
-            self.update_status("Voltage Meter connected.")
-            time.sleep(1)
+        if self.debug_mode_var.get():
+            # --- DEBUG MODE CONNECTION ---
+            self.update_status("Connecting in DEBUG MODE...")
+            try:
+                self.arduino = MockControlArduino(self)
+                self.voltage_meter = MockControlMeter(self.arduino)
+                self.current_meter = MockControlMeter(self.arduino)
+                self.update_status("Mock devices created.")
 
-            # Connect to Current Meter
-            self.update_status(f"Connecting to Current Meter ({self.CURRENT_METER_ADDRESS})...")
-            self.current_meter = cm.control_meter()
-            self.current_meter.connect(self.CURRENT_METER_ADDRESS)
-            self.current_meter.set_current_mode()
-            self.update_status("Current Meter connected.")
-            time.sleep(1)
-            
-            # Connect to Arduino
-            self.update_status(f"Connecting to Arduino ({self.ARDUINO_COM_PORT})...")
-            self.arduino = ca.control_arduino(self.ARDUINO_COM_PORT, self.ARDUINO_BAUDRATE)
-            if not self.arduino.running:
-                self.arduino = None # Ensure it's None if connection truly failed
-                raise Exception("Failed to connect to Arduino or start its read thread.")
-            self.update_status("Arduino connected. Initializing live display...")
+                # Start pre-recording display
+                self.stop_pre_recording_display_event.clear()
+                if not (self.pre_recording_display_thread and self.pre_recording_display_thread.is_alive()):
+                    self.pre_recording_display_thread = threading.Thread(target=self.run_pre_recording_display_loop, daemon=True)
+                    self.pre_recording_display_thread.start()
 
-            # Start pre-recording display now that Arduino is up
-            self.stop_pre_recording_display_event.clear()
-            if not (self.pre_recording_display_thread and self.pre_recording_display_thread.is_alive()):
-                self.pre_recording_display_thread = threading.Thread(target=self.run_pre_recording_display_loop, daemon=True)
-                self.pre_recording_display_thread.start()
+                # Enable UI elements
+                self.manual_pwm_radio.config(state=tk.NORMAL)
+                self.pid_preheat_radio.config(state=tk.NORMAL)
+                self.pid_power_radio.config(state=tk.NORMAL)
+                self.corrected_direct_power_radio.config(state=tk.NORMAL)
+                if hasattr(self, 'pwm_invert_checkbox'):
+                    self.pwm_invert_checkbox.config(state=tk.NORMAL)
 
-            # Enable UI elements
-            self.manual_pwm_radio.config(state=tk.NORMAL)
-            self.pid_preheat_radio.config(state=tk.NORMAL)
-            self.pid_power_radio.config(state=tk.NORMAL)
-            self.corrected_direct_power_radio.config(state=tk.NORMAL)
+                self.update_status("Debug Mode: Devices 'connected'. Live display active.")
+                self._handle_control_mode_change()
+                self.emergency_stop_button.config(state=tk.NORMAL)
+                self.start_button.config(state=tk.NORMAL)
+                self.connect_button.config(state=tk.DISABLED)
+                # Disable port/address entries
+                self.arduino_port_combobox.config(state=tk.DISABLED)
+                self.voltage_meter_address_combobox.config(state=tk.DISABLED)
+                self.current_meter_address_combobox.config(state=tk.DISABLED)
 
-            # Enable recording control mode radio buttons
-            self.rec_manual_pwm_radio.config(state=tk.NORMAL)
-            self.rec_corrected_direct_power_radio.config(state=tk.NORMAL)
-            self.rec_pid_power_radio.config(state=tk.NORMAL)
-            if hasattr(self, 'pwm_invert_checkbox'):
-                self.pwm_invert_checkbox.config(state=tk.NORMAL)
+            except Exception as e:
+                self.close_devices()
+                error_msg = f"Debug mode connection failed: {e}"
+                self.update_status(error_msg)
+                messagebox.showerror("Debug Error", error_msg)
+                # Reset UI to disconnected state
+                self.start_button.config(state=tk.DISABLED)
+                self.connect_button.config(state=tk.NORMAL)
+                self.arduino_port_combobox.config(state='readonly')
+                self.voltage_meter_address_combobox.config(state='readonly')
+                self.current_meter_address_combobox.config(state='readonly')
+        else:
+            # --- REAL HARDWARE CONNECTION ---
+            self.update_status("Connecting...")
+            try:
+                # Connect to Voltage Meter
+                vm_addr = self.voltage_meter_address_var.get()
+                self.update_status(f"Connecting to Voltage Meter ({vm_addr})...")
+                self.voltage_meter = cm.control_meter()
+                self.voltage_meter.connect(vm_addr)
+                self.voltage_meter.set_voltage_mode()
+                self.update_status("Voltage Meter connected.")
+                time.sleep(1)
 
-            # Verify and set initial PWM to 0 (logical)
-            self.update_status("Connect: Verifying zero power output...")
-            power_confirmed_zero_on_connect = False
-            if self.arduino and self.arduino.running:
-                for attempt in range(self.MAX_ZEROING_ATTEMPTS):
-                    logical_pwm_value_for_zero = 0
-                    self.pwm_percentage_var.set(0)
-                    self.current_pwm_setting_0_255 = logical_pwm_value_for_zero
-                    final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
-                    self.arduino.control_arduino(final_pwm_to_send)
-                    if hasattr(self, 'pwm_label_display') and self.pwm_label_display.winfo_exists():
-                        self.pwm_label_display.config(text="PWM: 0%")
-                    
-                    self.update_status(f"Connect: Attempt {attempt + 1}/{self.MAX_ZEROING_ATTEMPTS} - Sent logical PWM 0 (Actual: {final_pwm_to_send}). Checking power...")
-                    time.sleep(0.75) # Allow system to stabilize
-
-                    measured_power_on_connect = float('inf')
-                    voltage_val_conn, current_val_conn = None, None
-                    power_read_successful_conn = False
-
-                    if self.voltage_meter and self.current_meter:
-                        try:
-                            v_list = self.voltage_meter.read_voltage()
-                            if v_list: voltage_val_conn = v_list[0]
-                            c_list = self.current_meter.read_current()
-                            if c_list: current_val_conn = c_list[0]
-
-                            if voltage_val_conn is not None and current_val_conn is not None:
-                                measured_power_on_connect = float(voltage_val_conn) * float(current_val_conn)
-                                power_read_successful_conn = True
-                                self.update_status(f"Connect: Attempt {attempt + 1} - Measured power: {measured_power_on_connect:.2f}W")
-                            else:
-                                self.update_status(f"Connect: Attempt {attempt + 1} - Could not get V/I readings.")
-                        except pyvisa.errors.VisaIOError as ve:
-                            self.update_status(f"Connect: Attempt {attempt + 1} - VISA error reading power: {ve}")
-                        except Exception as e:
-                            self.update_status(f"Connect: Attempt {attempt + 1} - Error reading power: {e}")
-                    else:
-                        self.update_status(f"Connect: Attempt {attempt + 1} - Meters not available to check power.")
-
-                    if power_read_successful_conn and measured_power_on_connect < self.POWER_ZERO_THRESHOLD:
-                        self.update_status(f"Connect: Power confirmed near zero ({measured_power_on_connect:.2f}W). PWM inversion is {self.invert_pwm_var.get()}.")
-                        power_confirmed_zero_on_connect = True
-                        break
-                    else:
-                        if attempt < self.MAX_ZEROING_ATTEMPTS - 1:
-                            new_inversion_state = not self.invert_pwm_var.get()
-                            self.invert_pwm_var.set(new_inversion_state)
-                            self.update_status(f"Connect: Power not zero ({measured_power_on_connect:.2f}W). Flipped PWM inversion to {new_inversion_state}. Retrying...")
+                # Connect to Current Meter
+                cm_addr = self.current_meter_address_var.get()
+                self.update_status(f"Connecting to Current Meter ({cm_addr})...")
+                self.current_meter = cm.control_meter()
+                self.current_meter.connect(cm_addr)
+                self.current_meter.set_current_mode()
+                self.update_status("Current Meter connected.")
+                time.sleep(1)
                 
-                if not power_confirmed_zero_on_connect:
-                    warn_msg = f"Connect: Power NOT confirmed zero after {self.MAX_ZEROING_ATTEMPTS} attempts. Last: {measured_power_on_connect:.2f}W. Please check system."
-                    self.update_status(warn_msg)
-                    messagebox.showwarning("Connection Power Warning", warn_msg)
-            
-            self.update_status(f"Devices connected. Live display active. Ready to record. Initial power zeroing: {'OK' if power_confirmed_zero_on_connect else 'CHECK MANUALLY'}")
+                # Connect to Arduino
+                arduino_port = self.arduino_port_var.get()
+                self.update_status(f"Connecting to Arduino ({arduino_port})...")
+                self.arduino = ca.control_arduino(arduino_port, self.ARDUINO_BAUDRATE)
+                if not self.arduino.running:
+                    self.arduino = None # Ensure it's None if connection truly failed
+                    raise Exception("Failed to connect to Arduino or start its read thread.")
+                self.update_status("Arduino connected. Initializing live display...")
 
-            self._handle_control_mode_change() # Update UI based on current (default) mode
-            self.emergency_stop_button.config(state=tk.NORMAL) # Enable E-Stop
-            time.sleep(1) # Short delay to allow first data to potentially arrive for display
+                # Start pre-recording display now that Arduino is up
+                self.stop_pre_recording_display_event.clear()
+                if not (self.pre_recording_display_thread and self.pre_recording_display_thread.is_alive()):
+                    self.pre_recording_display_thread = threading.Thread(target=self.run_pre_recording_display_loop, daemon=True)
+                    self.pre_recording_display_thread.start()
 
-            self.start_button.config(state=tk.NORMAL)
-            self.connect_button.config(state=tk.DISABLED)
-        except Exception as e:
-            self.close_devices() # Ensure any partially opened devices are closed
-            error_msg = f"Connection failed: {e}"
-            self.update_status(error_msg)
-            messagebox.showerror("Connection Error", error_msg)
-            self.start_button.config(state=tk.DISABLED)
-            self.preheat_button.config(state=tk.DISABLED)
-            self.set_pwm_button.config(state=tk.DISABLED) # Disable PWM buttons on connection failure
-            self.set_pwm_zero_button.config(state=tk.DISABLED)
-            self.emergency_stop_button.config(state=tk.DISABLED) # Disable E-Stop
-            # self.load_tr_file_button.config(state=tk.DISABLED) # Removed
-            # Equation parameter entries are disabled by _handle_control_mode_change
-            self.connect_button.config(state=tk.NORMAL) # Allow retry
+                # Enable UI elements
+                self.manual_pwm_radio.config(state=tk.NORMAL)
+                self.pid_preheat_radio.config(state=tk.NORMAL)
+                self.pid_power_radio.config(state=tk.NORMAL)
+                self.corrected_direct_power_radio.config(state=tk.NORMAL)
+
+                if hasattr(self, 'pwm_invert_checkbox'):
+                    self.pwm_invert_checkbox.config(state=tk.NORMAL)
+
+                # Verify and set initial PWM to 0 (logical)
+                self.update_status("Connect: Verifying zero power output...")
+                power_confirmed_zero_on_connect = False
+                if self.arduino and self.arduino.running:
+                    for attempt in range(self.MAX_ZEROING_ATTEMPTS):
+                        logical_pwm_value_for_zero = 0
+                        self.pwm_percentage_var.set(0)
+                        self.current_pwm_setting_0_255 = logical_pwm_value_for_zero
+                        final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
+                        self.arduino.control_arduino(final_pwm_to_send)
+                        if hasattr(self, 'pwm_label_display') and self.pwm_label_display.winfo_exists():
+                            self.pwm_label_display.config(text="PWM: 0%")
+                        
+                        self.update_status(f"Connect: Attempt {attempt + 1}/{self.MAX_ZEROING_ATTEMPTS} - Sent logical PWM 0 (Actual: {final_pwm_to_send}). Checking power...")
+                        time.sleep(0.75) # Allow system to stabilize
+
+                        measured_power_on_connect = float('inf')
+                        voltage_val_conn, current_val_conn = None, None
+                        power_read_successful_conn = False
+
+                        if self.voltage_meter and self.current_meter:
+                            try:
+                                v_list = self.voltage_meter.read_voltage()
+                                if v_list: voltage_val_conn = v_list[0]
+                                c_list = self.current_meter.read_current()
+                                if c_list: current_val_conn = c_list[0]
+
+                                if voltage_val_conn is not None and current_val_conn is not None:
+                                    measured_power_on_connect = float(voltage_val_conn) * float(current_val_conn)
+                                    power_read_successful_conn = True
+                                    self.update_status(f"Connect: Attempt {attempt + 1} - Measured power: {measured_power_on_connect:.2f}W")
+                                else:
+                                    self.update_status(f"Connect: Attempt {attempt + 1} - Could not get V/I readings.")
+                            except pyvisa.errors.VisaIOError as ve:
+                                self.update_status(f"Connect: Attempt {attempt + 1} - VISA error reading power: {ve}")
+                            except Exception as e:
+                                self.update_status(f"Connect: Attempt {attempt + 1} - Error reading power: {e}")
+                        else:
+                            self.update_status(f"Connect: Attempt {attempt + 1} - Meters not available to check power.")
+
+                        if power_read_successful_conn and measured_power_on_connect < self.POWER_ZERO_THRESHOLD:
+                            self.update_status(f"Connect: Power confirmed near zero ({measured_power_on_connect:.2f}W). PWM inversion is {self.invert_pwm_var.get()}.")
+                            power_confirmed_zero_on_connect = True
+                            break
+                        else:
+                            if attempt < self.MAX_ZEROING_ATTEMPTS - 1:
+                                new_inversion_state = not self.invert_pwm_var.get()
+                                self.invert_pwm_var.set(new_inversion_state)
+                                self.update_status(f"Connect: Power not zero ({measured_power_on_connect:.2f}W). Flipped PWM inversion to {new_inversion_state}. Retrying...")
+                    
+                    if not power_confirmed_zero_on_connect:
+                        warn_msg = f"Connect: Power NOT confirmed zero after {self.MAX_ZEROING_ATTEMPTS} attempts. Last: {measured_power_on_connect:.2f}W. Please check system."
+                        self.update_status(warn_msg)
+                        messagebox.showwarning("Connection Power Warning", warn_msg)
+                
+                self.update_status(f"Devices connected. Live display active. Ready to record. Initial power zeroing: {'OK' if power_confirmed_zero_on_connect else 'CHECK MANUALLY'}")
+
+                self._handle_control_mode_change() # Update UI based on current (default) mode
+                self.emergency_stop_button.config(state=tk.NORMAL) # Enable E-Stop
+                time.sleep(1) # Short delay to allow first data to potentially arrive for display
+
+                self.start_button.config(state=tk.NORMAL)
+                self.connect_button.config(state=tk.DISABLED)
+                # Disable port/address entries
+                self.arduino_port_combobox.config(state=tk.DISABLED)
+                self.voltage_meter_address_combobox.config(state=tk.DISABLED)
+                self.current_meter_address_combobox.config(state=tk.DISABLED)
+
+            except Exception as e:
+                self.close_devices() # Ensure any partially opened devices are closed
+                error_msg = f"Connection failed: {e}"
+                self.update_status(error_msg)
+                messagebox.showerror("Connection Error", error_msg)
+                self.start_button.config(state=tk.DISABLED)
+                self.preheat_button.config(state=tk.DISABLED)
+                self.set_pwm_button.config(state=tk.DISABLED) # Disable PWM buttons on connection failure
+                self.set_pwm_zero_button.config(state=tk.DISABLED)
+                self.emergency_stop_button.config(state=tk.DISABLED) # Disable E-Stop
+                # self.load_tr_file_button.config(state=tk.DISABLED) # Removed
+                # Equation parameter entries are disabled by _handle_control_mode_change
+                self.connect_button.config(state=tk.NORMAL) # Allow retry
+                # Ensure port/address entries are enabled on failure (close_devices should handle this)
+                self.arduino_port_combobox.config(state='readonly') # Re-enable to readonly
+                self.voltage_meter_address_combobox.config(state='readonly') # Re-enable to readonly
+                self.current_meter_address_combobox.config(state='readonly') # Re-enable to readonly
+
 
     def run_pre_recording_display_loop(self):
         """
@@ -909,22 +1128,21 @@ class DataCollectionUI:
             messagebox.showerror("Error", "Arduino not connected.")
             return
 
-        if self.recording:
-            messagebox.showerror("Error", "Recording in progress. Please stop recording first.")
-            return
-
-        if self.control_mode_var.get() != "PID_PREHEAT":
-            self.control_mode_var.set("PID_PREHEAT")
-            self._handle_control_mode_change() # This will stop other PIDs/manual
-            # UI for preheat controls will be enabled by _handle_control_mode_change
-        
-        # Ensure Corrected Direct Power is stopped if it was active
-        if self.corrected_direct_power_active:
-            self.stop_corrected_direct_power()
-
         if self.preheating_active:
+            # If it's already active, just stop it.
             self.stop_preheat()
         else:
+            # If we are about to START it:
+            # 1. Stop any other active controllers.
+            if self.power_pid_active: self.stop_power_pid()
+            if self.corrected_direct_power_active: self.stop_corrected_direct_power()
+
+            # 2. Set the UI to the correct mode.
+            if self.control_mode_var.get() != "PID_PREHEAT":
+                self.control_mode_var.set("PID_PREHEAT")
+                self._handle_control_mode_change()
+            
+            # 3. Start the controller.
             self.start_preheat()
 
     def start_preheat(self):
@@ -954,9 +1172,10 @@ class DataCollectionUI:
 
         self.update_status(f"PID Preheat ({self.pid_sensor_var.get()}) started. Target: {setpoint}°C")
 
-    def stop_preheat(self):
+    def stop_preheat(self, set_pwm_to_zero=True):
         """
         Stops the PID preheating thread, turns off the heater, and updates UI state.
+        :param set_pwm_to_zero: If True, explicitly sets PWM to 0. If False, leaves PWM as is for seamless mode switching.
         """
         if self.preheat_thread and self.preheat_thread.is_alive():
             self.stop_preheat_event.set()
@@ -966,9 +1185,16 @@ class DataCollectionUI:
         self.preheat_thread = None
         self.preheating_active = False
 
-        # REMOVED: Do not automatically set PWM to 0 when stopping preheat.
-        # if self.arduino and self.arduino.running:
-        #     self.arduino.control_arduino(0) # Turn off heater by setting PWM to 0
+        if set_pwm_to_zero:
+            # Set PWM to a safe state (0) when stopping the controller.
+            if self.arduino and self.arduino.running:
+                final_pwm_to_send = self._apply_pwm_inversion(0)
+                self.arduino.control_arduino(final_pwm_to_send)
+                self.update_status("PID Preheat stopped. PWM set to 0.")
+            else:
+                self.update_status("PID Preheat stopped.")
+        else:
+            self.update_status("PID Preheat controller stopped for mode switch.")
 
         # UI updates are now handled by _handle_control_mode_change
         # Ensure the button text and status label are reset correctly if not switching mode
@@ -976,8 +1202,6 @@ class DataCollectionUI:
             self.preheat_button.config(text="Start Preheat")
             self.preheat_status_label.config(text="Preheat Status: Off")
         self._handle_control_mode_change() # Refresh UI states
-
-        self.update_status("PID Preheat stopped.")
 
     def run_preheat_loop(self):
         """
@@ -1012,6 +1236,7 @@ class DataCollectionUI:
 
             if pwm_output_float is not None: # pwm_output_float could be None if update interval not met
                 pwm_to_send = int(round(pwm_output_float))
+                self.last_active_pwm_0_255 = pwm_to_send # Update last active PWM
                 final_pwm_value_sent = self._apply_pwm_inversion(pwm_to_send)
                 self.arduino.control_arduino(final_pwm_value_sent)
                 # print(f"[PreheatLoop] Sent PWM to Arduino: {pwm_to_send}")
@@ -1040,21 +1265,21 @@ class DataCollectionUI:
             messagebox.showerror("Error", "Arduino or Meters not connected.")
             return
 
-        if self.recording:
-            messagebox.showerror("Error", "Recording in progress. Please stop recording first.")
-            return
-
-        if self.control_mode_var.get() != "PID_POWER":
-            self.control_mode_var.set("PID_POWER")
-            self._handle_control_mode_change()
-        
-        # Ensure Corrected Direct Power is stopped if it was active
-        if self.corrected_direct_power_active:
-            self.stop_corrected_direct_power()
-
         if self.power_pid_active:
+            # If it's already active, just stop it.
             self.stop_power_pid()
         else:
+            # If we are about to START it:
+            # 1. Stop any other active controllers.
+            if self.preheating_active: self.stop_preheat()
+            if self.corrected_direct_power_active: self.stop_corrected_direct_power()
+
+            # 2. Set the UI to the correct mode.
+            if self.control_mode_var.get() != "PID_POWER":
+                self.control_mode_var.set("PID_POWER")
+                self._handle_control_mode_change()
+            
+            # 3. Start the controller.
             self.start_power_pid()
 
     def start_power_pid(self):
@@ -1080,8 +1305,11 @@ class DataCollectionUI:
         self._handle_control_mode_change() # Refresh UI states
         self.update_status(f"PID Power Control started. Target: {setpoint}W")
 
-    def stop_power_pid(self):
-        """Stops the PID power control thread and turns off heater."""
+    def stop_power_pid(self, set_pwm_to_zero=True):
+        """
+        Stops the PID power control thread and turns off heater.
+        :param set_pwm_to_zero: If True, explicitly sets PWM to 0. If False, leaves PWM as is for seamless mode switching.
+        """
         if self.power_pid_thread and self.power_pid_thread.is_alive():
             self.stop_power_pid_event.set()
             self.power_pid_thread.join(timeout=2.0)
@@ -1090,15 +1318,21 @@ class DataCollectionUI:
         self.power_pid_thread = None
         self.power_pid_active = False
 
-        # REMOVED: Do not automatically set PWM to 0 when stopping power PID.
-        # if self.arduino and self.arduino.running:
-        #     self.arduino.control_arduino(0) # Turn off heater
+        if set_pwm_to_zero:
+            # Set PWM to a safe state (0) when stopping the controller.
+            if self.arduino and self.arduino.running:
+                final_pwm_to_send = self._apply_pwm_inversion(0)
+                self.arduino.control_arduino(final_pwm_to_send)
+                self.update_status("PID Power Control stopped. PWM set to 0.")
+            else:
+                self.update_status("PID Power Control stopped.")
+        else:
+            self.update_status("PID Power controller stopped for mode switch.")
 
         if self.control_mode_var.get() == "PID_POWER": # Only if still in this mode
             self.power_pid_button.config(text="Start Power Ctrl")
             self.power_pid_status_label.config(text="Power PID Status: Off")
         self._handle_control_mode_change() # Refresh UI states
-        self.update_status("PID Power Control stopped.")
 
     def run_power_pid_loop(self):
         """Thread loop for PID power control."""
@@ -1167,6 +1401,7 @@ class DataCollectionUI:
 
             if pwm_output_float is not None:
                 pwm_to_send = int(round(pwm_output_float))
+                self.last_active_pwm_0_255 = pwm_to_send # Update last active PWM
                 final_pwm_value_sent = self._apply_pwm_inversion(pwm_to_send)
                 self.arduino.control_arduino(final_pwm_value_sent)
                 # print(f"[PowerPIDLoop] Sent PWM to Arduino: {pwm_to_send}")
@@ -1191,18 +1426,22 @@ class DataCollectionUI:
         if not (self.arduino and self.arduino.running and self.voltage_meter and self.current_meter):
             messagebox.showerror("Error", "Arduino or Meters not connected.")
             return
-        if self.recording:
-            messagebox.showerror("Error", "Recording in progress. Please stop recording first.")
-            return
-        
-        # Ensure we are in the correct mode (though UI should enforce this)
-        if self.control_mode_var.get() != "CORRECTED_DIRECT_POWER":
-            self.control_mode_var.set("CORRECTED_DIRECT_POWER")
-            self._handle_control_mode_change() # This will stop other PIDs
 
         if self.corrected_direct_power_active:
+            # If it's already active, just stop it.
             self.stop_corrected_direct_power()
         else:
+            # If we are about to START it:
+            # 1. Stop any other active controllers.
+            if self.preheating_active: self.stop_preheat()
+            if self.power_pid_active: self.stop_power_pid()
+
+            # 2. Set the UI to the correct mode.
+            if self.control_mode_var.get() != "CORRECTED_DIRECT_POWER":
+                self.control_mode_var.set("CORRECTED_DIRECT_POWER")
+                self._handle_control_mode_change()
+            
+            # 3. Start the controller.
             self.start_corrected_direct_power()
     # The start_corrected_direct_power and stop_corrected_direct_power methods
     # will now update self.corrected_power_button and self.corrected_power_status_label
@@ -1250,7 +1489,11 @@ class DataCollectionUI:
         self._handle_control_mode_change() # Refresh UI states (mainly for other controls)
         self.update_status(f"Corrected Direct Power Control started. Target: {target_power}W")
 
-    def stop_corrected_direct_power(self):
+    def stop_corrected_direct_power(self, set_pwm_to_zero=True):
+        """
+        Stops the Corrected Direct Power thread and turns off heater.
+        :param set_pwm_to_zero: If True, explicitly sets PWM to 0. If False, leaves PWM as is for seamless mode switching.
+        """
         if self.corrected_direct_power_thread and self.corrected_direct_power_thread.is_alive():
             self.stop_corrected_direct_power_event.set()
             self.corrected_direct_power_thread.join(timeout=2.0)
@@ -1259,12 +1502,22 @@ class DataCollectionUI:
         self.corrected_direct_power_thread = None
         self.corrected_direct_power_active = False
 
+        if set_pwm_to_zero:
+            # Set PWM to a safe state (0) when stopping the controller.
+            if self.arduino and self.arduino.running:
+                final_pwm_to_send = self._apply_pwm_inversion(0)
+                self.arduino.control_arduino(final_pwm_to_send)
+                self.update_status("Corrected Direct Power Control stopped. PWM set to 0.")
+            else:
+                self.update_status("Corrected Direct Power Control stopped.")
+        else:
+            self.update_status("Corrected Direct Power controller stopped for mode switch.")
+
         # Update dedicated button and status label
         self.corrected_power_button.config(text="Start Corr.Pwr") 
         self.corrected_power_status_label.config(text="Corrected Pwr: Off") 
         
         self._handle_control_mode_change() # Refresh UI states (mainly for other controls)
-        self.update_status("Corrected Direct Power Control stopped.")
 
     def run_corrected_direct_power_loop(self):
         last_ui_update_time = time.time()
@@ -1352,6 +1605,7 @@ class DataCollectionUI:
                         # print(f"[CorrectedPwrLoop_DEBUG] Step 3: pwm_calculated_float = ({V_total_required:.4f} / {v_supply_max_pwm}) * 255.0 = {pwm_calculated_float:.4f}")
                         
                         pwm_final_sent = int(round(max(0, min(pwm_calculated_float, 255))))
+                        self.last_active_pwm_0_255 = pwm_final_sent # Update last active PWM
                         
                         # Comprehensive debug print for this iteration
                         print(f"[CorrectedPwrLoop_ITER_DEBUG] "
@@ -1367,6 +1621,7 @@ class DataCollectionUI:
                         #       f"TgtP_h: {target_power_w:.2f}, MeasP_tot: {measured_power if measured_power is not None else 'N/A'}, "
                         #       f"Temp_R: {current_temp_for_R:.2f}C, R_h: {R_heater:.3f}Ω")
                         effective_zero_pwm = self._apply_pwm_inversion(0)
+                        self.last_active_pwm_0_255 = 0 # Update last active PWM
                         self.arduino.control_arduino(effective_zero_pwm)
                         pwm_final_sent = 0
                 else: # R_heater could not be calculated or is not positive enough
@@ -1375,12 +1630,14 @@ class DataCollectionUI:
                     #       f"MeasP_tot: {measured_power if measured_power is not None else 'N/A'}, Temp_R: {current_temp_for_R:.2f}C")
                     effective_zero_pwm = self._apply_pwm_inversion(0)
                     self.arduino.control_arduino(effective_zero_pwm)
+                    self.last_active_pwm_0_255 = 0 # Update last active PWM
                     pwm_final_sent = 0
             else: # No valid temperature for R_heater
                 # current_temp_for_R is the issue, R_heater would not be calculated
                 # print(f"[CorrectedPwrLoop_DEBUG_ITERATION_OFF] Cond: Invalid Temp for R_heater. PWM=0. "
                 #       f"MeasP_tot: {measured_power if measured_power is not None else 'N/A'}")
                 effective_zero_pwm = self._apply_pwm_inversion(0)
+                self.last_active_pwm_0_255 = 0 # Update last active PWM
                 self.arduino.control_arduino(effective_zero_pwm) # Safety: turn off
                 pwm_final_sent = 0
 
@@ -1440,79 +1697,11 @@ class DataCollectionUI:
         if not (self.voltage_meter and self.current_meter and self.arduino and self.arduino.running):
             messagebox.showerror("Error", "Devices are not connected properly.")
             return
-        
-        self.active_recording_control_mode = self.recording_control_mode_var.get()
-        self.update_status(f"Starting recording with mode: {self.active_recording_control_mode}")
-
-        if self.active_recording_control_mode == "MANUAL_PWM":
-            if self.preheating_active: self.stop_preheat()
-            if self.power_pid_active: self.stop_power_pid()
-            if self.corrected_direct_power_active: self.stop_corrected_direct_power()
-            self.control_mode_var.set("MANUAL_PWM") # Sync live mode display
-            try:
-                percentage = self.pwm_percentage_var.get()
-                if not (0 <= percentage <= 100):
-                    messagebox.showerror("PWM Error", "Manual PWM for recording: Percentage must be 0-100.")
-                    return
-                self.current_pwm_setting_0_255 = self._calculate_pwm_actual(percentage)
-                self.pwm_label_display.config(text=f"PWM: {percentage}%")
-                if self.arduino and self.arduino.running:
-                    final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
-                    self.arduino.control_arduino(final_pwm_to_send)
-                else:
-                    messagebox.showerror("Error", "Arduino not connected for Manual PWM recording.")
-                    return
-            except tk.TclError:
-                messagebox.showerror("PWM Error", "Manual PWM for recording: Invalid percentage.")
-                return
-        elif self.active_recording_control_mode == "PID_POWER":
-            if self.preheating_active: self.stop_preheat()
-            if self.corrected_direct_power_active: self.stop_corrected_direct_power()
-            self.control_mode_var.set("PID_POWER") # Sync live mode display
-            if not self.power_pid_active:
-                self.start_power_pid()
-            if not self.power_pid_active: # If start_power_pid failed
-                messagebox.showerror("Error", "Failed to start PID Power Control for recording.")
-                return
-        elif self.active_recording_control_mode == "CORRECTED_DIRECT_POWER":            
-            try: # Validate equation parameters before starting recording in this mode
-                param_A_val = self.equation_param_A_var.get()
-                _ = self.equation_param_C_var.get() # Just to check if it's a valid float
-                rds_on_val = self.rds_on_var.get()
-                if param_A_val <= 0:
-                    messagebox.showerror("Error", "Corrected Direct Power: Equation parameter A must be positive.")
-                    return
-                if rds_on_val < 0:
-                    messagebox.showerror("Error", "Corrected Direct Power: MOSFET Rds(on) must be non-negative.")
-                    return
-                v_supply_max_pwm_val = self.nominal_supply_voltage_var.get()
-                if v_supply_max_pwm_val <= 0:
-                    messagebox.showerror("Error", "Corrected Direct Power: Nominal Supply Voltage (V_supply_max_pwm) must be positive.")
-                    return
-
-            except tk.TclError:
-                messagebox.showerror("Error", "Corrected Direct Power: Invalid equation parameter(s).")
-                return
-            if self.preheating_active: self.stop_preheat()
-            if self.power_pid_active: self.stop_power_pid() # Stop regular PID power if active
-            self.control_mode_var.set("CORRECTED_DIRECT_POWER")
-            if not self.corrected_direct_power_active:
-                self.start_corrected_direct_power() 
-            if not self.corrected_direct_power_active: # If start failed
-                messagebox.showerror("Error", "Failed to start Corrected Direct Power Control for recording.")
-                return
-        # Removed PID_PREHEAT as a recording mode option
-        # else: # Should not happen if UI is correctly configured
-        #     messagebox.showerror("Error", f"Unknown recording control mode: {self.active_recording_control_mode}")
-        #     return
-        
-        self._handle_control_mode_change() # Update UI based on the (possibly new) live mode
 
         self.recording = True
         self.elapsed_time = 0
         self.data = [] # Clear previous data
         self.flip_event_times = [] # Clear previous flip events
-        
         # Stop pre-recording display thread if it's running
         if self.pre_recording_display_thread and self.pre_recording_display_thread.is_alive():
             self.stop_pre_recording_display_event.set()
@@ -1533,25 +1722,8 @@ class DataCollectionUI:
 
         self.start_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
-        self.connect_button.config(state=tk.DISABLED) # Disable connect during recording
+        self.connect_button.config(state=tk.DISABLED) # Disable connect/disconnect during recording
         self.steak_type_entry.config(state=tk.DISABLED) # Disable steak type entry during recording
-        
-        # Disable all live control inputs and mode selections
-        self.manual_pwm_radio.config(state=tk.DISABLED)
-        self.pid_preheat_radio.config(state=tk.DISABLED)
-        self.pid_power_radio.config(state=tk.DISABLED)
-        self.corrected_direct_power_radio.config(state=tk.DISABLED)
-        self.pwm_entry.config(state=tk.DISABLED)
-        self.set_pwm_button.config(state=tk.DISABLED)
-        self.set_pwm_zero_button.config(state=tk.DISABLED)
-        # PID controls are already handled by _handle_control_mode_change, but ensure they are off if not the active recording mode
-        self.preheat_button.config(state=tk.DISABLED)
-        self.power_pid_button.config(state=tk.DISABLED) # Standard PID power button
-        self.corrected_power_button.config(state=tk.DISABLED) # New Corrected power button
-        # Corrected Direct Power button (reused power_pid_button) would also be disabled by _handle_control_mode_change
-        self.rec_manual_pwm_radio.config(state=tk.DISABLED) 
-        # self.rec_pid_preheat_radio.config(state=tk.DISABLED) # Removed
-        self.rec_pid_power_radio.config(state=tk.DISABLED) 
 
         self.flip_button.config(state=tk.NORMAL) # Enable flip button during recording
         self.update_status("Recording started...")
@@ -1571,11 +1743,6 @@ class DataCollectionUI:
             # else: # Debug
                 # print("[UI] Data collection thread joined successfully.") # Debug
         
-        # If manual PWM was used for recording, set PWM to 0. PID modes continue.
-        if self.active_recording_control_mode == "MANUAL_PWM":
-            if self.arduino and self.arduino.running:
-                effective_zero_pwm = self._apply_pwm_inversion(0)
-                self.arduino.control_arduino(effective_zero_pwm)
         # UI timer thread is daemon, will stop.
 
         # Restart pre-recording display if devices are still connected
@@ -1592,20 +1759,6 @@ class DataCollectionUI:
         self.flip_button.config(state=tk.DISABLED) # Disable flip button after recording
         self.connect_button.config(state=tk.NORMAL if not (self.voltage_meter and self.current_meter and self.arduino) else tk.DISABLED)
 
-        # Re-enable control mode radio buttons if devices are connected
-        radio_state = tk.NORMAL if self.arduino and self.arduino.running else tk.DISABLED
-        self.manual_pwm_radio.config(state=radio_state)
-        self.pid_preheat_radio.config(state=radio_state)
-        self.pid_power_radio.config(state=radio_state)
-        self.corrected_direct_power_radio.config(state=radio_state)
-
-        # Re-enable recording control mode radio buttons if devices are connected
-        self.rec_manual_pwm_radio.config(state=radio_state)
-        self.rec_corrected_direct_power_radio.config(state=radio_state)
-        self.rec_pid_power_radio.config(state=radio_state)
-        
-        self._handle_control_mode_change() # Update UI elements based on current mode
-
         if self.data:
             self.update_status("Recording stopped. Saving and plotting data...")
             self.save_and_plot_data()
@@ -1619,6 +1772,10 @@ class DataCollectionUI:
         # Re-enable connect button if devices are connected, otherwise it should stay as is.
         if self.voltage_meter and self.current_meter and self.arduino:
              self.connect_button.config(state=tk.DISABLED) # Still connected
+             # Keep port entries disabled
+             self.arduino_port_combobox.config(state=tk.DISABLED)
+             self.voltage_meter_address_combobox.config(state=tk.DISABLED)
+             self.current_meter_address_combobox.config(state=tk.DISABLED)
         else:
              self.connect_button.config(state=tk.NORMAL) # Not connected, allow reconnect
 
@@ -1694,12 +1851,9 @@ class DataCollectionUI:
             current_loop_time = time.time()
             
             try:                
-                if self.active_recording_control_mode == "MANUAL_PWM":
-                    if self.arduino and self.arduino.running:
-                         final_pwm_to_send = self._apply_pwm_inversion(self.current_pwm_setting_0_255)
-                         self.arduino.control_arduino(final_pwm_to_send)
-                
-                voltage_val, current_val = None, None 
+                # The active control loop (PID or manual button) is responsible for sending PWM commands.
+                # This loop's only job is to read and record data.
+                voltage_val, current_val = None, None
                 temperature_array = np.array([-1.0]*5) # Default if Arduino read fails or not connected
 
                 try:
@@ -1726,13 +1880,14 @@ class DataCollectionUI:
                 if voltage_val is not None and current_val is not None and temperature_array.size == 5:
                     self.data.append([
                         current_loop_time - loop_start_time,
-                        float(voltage_val),
+                        float(voltage_val), # This is the voltage value
                         float(current_val),
                         temperature_array[0], # TH
                         temperature_array[1], # Ttest
                         temperature_array[2], # TM_1
                         temperature_array[3], # TM_2
-                        temperature_array[4]  # TM_3
+                        temperature_array[4],  # TM_3
+                        self.control_mode_var.get() # Current control mode
                     ])
                     # Schedule real-time display update
                     self.master.after(0, self.update_realtime_display, voltage_val, current_val, temperature_array)
@@ -1762,14 +1917,14 @@ class DataCollectionUI:
             return
 
         data_np = np.array(self.data)
-        if data_np.shape[0] == 0:
+        if data_np.shape[0] == 0 or data_np.shape[1] < 9: # Check for expected number of columns
             self.update_status("No data to save after numpy conversion.")
             return
 
         # Calculate average power for the filename
         try:
             # Voltage is at index 1, Current is at index 2
-            average_power = np.mean(data_np[:, 1] * data_np[:, 2])
+            average_power = np.nanmean(data_np[:, 1].astype(float) * data_np[:, 2].astype(float))
         except (IndexError, ValueError) as e:
             print(f"Could not calculate average power for filename: {e}")
             average_power = 0.0 # Default if calculation fails
@@ -1785,7 +1940,7 @@ class DataCollectionUI:
         
         try:
             # Prepare data for saving, including flip events
-            header = "Time,voltage,current,TH,Ttest,TM_1,TM_2,TM_3,FlipEvent"
+            header = "Time,voltage,current,TH,Ttest,TM_1,TM_2,TM_3,Control_Mode,FlipEvent"
             
             # Create a new column for flip events, initialized to 0
             flip_column = np.zeros((data_np.shape[0], 1))
@@ -1794,13 +1949,14 @@ class DataCollectionUI:
             # Convert recorded flip times (which are elapsed_time) to approximate row indices
             # This assumes self.sample_interval is the time step for each row in data_np
             if self.flip_event_times:
+                time_column_float = data_np[:, 0].astype(float)
                 for t_flip in self.flip_event_times:
                     # Find the closest row index for the flip time
                     # This can be tricky if sample_interval isn't perfectly regular or if t_flip doesn't align
                     # A more robust way is to find the index where data_np[:, 0] is closest to t_flip
                     try:
                         # Find the index of the time value closest to t_flip
-                        closest_time_index = np.abs(data_np[:, 0] - t_flip).argmin()
+                        closest_time_index = np.abs(time_column_float - t_flip).argmin()
                         flip_column[closest_time_index, 0] = 1 # Mark as 1 for flip
                     except IndexError:
                         print(f"Warning: Could not accurately map flip time {t_flip}s to data row.")
@@ -1808,22 +1964,27 @@ class DataCollectionUI:
             # Concatenate the flip column to the main data
             data_to_save = np.concatenate((data_np, flip_column), axis=1)
             
-            # Define custom format for columns, ensuring FlipEvent is integer
-            # Original 8 columns are float, last one is int
-            formats = ['%.5f'] * 8 + ['%d'] 
+            # Define custom format for columns, ensuring Control_Mode is string and FlipEvent is integer
+            # Original 8 columns (Time, V, I, T1-T5) are float, Control_Mode is string, FlipEvent is int
+            # We need to handle the string column. np.savetxt is not ideal for mixed types.
+            # Using pandas DataFrame to_csv is more robust for mixed types.
+            import pandas as pd
+            df_to_save = pd.DataFrame(data_to_save, columns=header.split(','))
+            df_to_save['FlipEvent'] = df_to_save['FlipEvent'].astype(float).astype(int) # Ensure FlipEvent is int
 
-            np.savetxt(filename, data_to_save, delimiter=",",
-                       header=header,
-                       comments="", fmt=formats)
+            df_to_save.to_csv(filename, index=False, float_format='%.5f')
             self.update_status(f"Data (including flips) saved to {filename}")
 
-            # Plotting
+            # Plotting (using data_np for numerical plotting, as it's already numerical)
+            # Ensure data_np is converted to float for plotting if it contains strings
+            data_for_plot = data_np[:, :8].astype(float) # Take only numerical columns for plotting
+
             plt.figure(figsize=(12, 9)) # Adjusted figure size
 
             plt.subplot(2, 1, 1)
-            plt.plot(data_np[:, 0], data_np[:, 1], label="Voltage (V)")
-            plt.plot(data_np[:, 0], data_np[:, 2] * 10, label="Current (A x10)") # Assuming current is multiplied by 10 for plotting
-            plt.plot(data_np[:, 0], np.multiply(data_np[:, 1], data_np[:, 2]), label="Power (W)")
+            plt.plot(data_for_plot[:, 0], data_for_plot[:, 1], label="Voltage (V)")
+            plt.plot(data_for_plot[:, 0], data_for_plot[:, 2] * 10, label="Current (A x10)") # Assuming current is multiplied by 10 for plotting
+            plt.plot(data_for_plot[:, 0], np.multiply(data_for_plot[:, 1], data_for_plot[:, 2]), label="Power (W)")
             plt.xlabel("Time (s)")
             plt.ylabel("Value")
             plt.title("Voltage, Current, and Power")
@@ -1834,11 +1995,11 @@ class DataCollectionUI:
                 plt.axvline(x=t_flip, color='r', linestyle='--', linewidth=0.8, label='Flip' if t_flip == self.flip_event_times[0] else None)
 
             plt.subplot(2, 1, 2)
-            plt.plot(data_np[:, 0], data_np[:, 3], label="TH (°C)")
-            plt.plot(data_np[:, 0], data_np[:, 4], label="Ttest (°C)")
-            plt.plot(data_np[:, 0], data_np[:, 5], label="TM_1 (°C)")
-            plt.plot(data_np[:, 0], data_np[:, 6], label="TM_2 (°C)")
-            plt.plot(data_np[:, 0], data_np[:, 7], label="TM_3 (°C)")
+            plt.plot(data_for_plot[:, 0], data_for_plot[:, 3], label="TH (°C)")
+            plt.plot(data_for_plot[:, 0], data_for_plot[:, 4], label="Ttest (°C)")
+            plt.plot(data_for_plot[:, 0], data_for_plot[:, 5], label="TM_1 (°C)")
+            plt.plot(data_for_plot[:, 0], data_for_plot[:, 6], label="TM_2 (°C)")
+            plt.plot(data_for_plot[:, 0], data_for_plot[:, 7], label="TM_3 (°C)")
             plt.xlabel("Time (s)")
             plt.ylabel("Temperature (°C)")
             plt.title("Temperatures")
@@ -1925,16 +2086,16 @@ class DataCollectionUI:
         self.eq_C_entry.config(state=tk.DISABLED) # Disable Param C entry
         self.rds_on_entry.config(state=tk.DISABLED) # Disable Rds(on) entry
         self.nominal_supply_voltage_entry.config(state=tk.DISABLED) # Disable V_supply_max_pwm entry
-        if hasattr(self, 'pwm_invert_checkbox'):
-            self.pwm_invert_checkbox.config(state=tk.DISABLED)
-
-        self.rec_manual_pwm_radio.config(state=tk.DISABLED)
-        self.rec_corrected_direct_power_radio.config(state=tk.DISABLED)
-        self.rec_pid_power_radio.config(state=tk.DISABLED) 
+        if hasattr(self, 'pwm_invert_checkbox'): self.pwm_invert_checkbox.config(state=tk.DISABLED)
 
         self.control_mode_var.set("MANUAL_PWM") # Reset to default
-        self._handle_recording_control_mode_change()
         self.emergency_stop_button.config(state=tk.DISABLED)
+        
+        # Re-enable port/address entries as devices are closed
+        self.arduino_port_combobox.config(state='readonly')
+        self.voltage_meter_address_combobox.config(state='readonly')
+        self.current_meter_address_combobox.config(state='readonly')
+        self.connect_button.config(state=tk.NORMAL) # Re-enable connect button
         self._handle_control_mode_change() # This will disable all specific controls based on new default
 
     def emergency_stop(self):
@@ -1949,8 +2110,15 @@ class DataCollectionUI:
         if self.corrected_direct_power_active:
             self.stop_corrected_direct_power()
 
-        # 2. Stop Heating: Attempt to set PWM to 0 and verify power, retrying with inversion if necessary.
-        if self.arduino and self.arduino.running:
+        # 2. Stop Heating: In debug mode, just send 0. In normal mode, verify power is off.
+        if self.debug_mode_var.get():
+            self.update_status("E-STOP: [DEBUG] Setting PWM to 0.")
+            if self.arduino and self.arduino.running:
+                self.arduino.control_arduino(self._apply_pwm_inversion(0))
+                self.pwm_percentage_var.set(0)
+                if hasattr(self, 'pwm_label_display') and self.pwm_label_display.winfo_exists():
+                    self.pwm_label_display.config(text="PWM: 0%")
+        elif self.arduino and self.arduino.running:
             self.update_status("E-STOP: Attempting to set PWM to zero and verify power...")
             
             power_confirmed_zero = False
@@ -2055,8 +2223,7 @@ class DataCollectionUI:
         # Set state of control mode radio buttons based on connection status
         radio_button_names = [
             'manual_pwm_radio', 'pid_preheat_radio', 'pid_power_radio',
-            'corrected_direct_power_radio', 'rec_manual_pwm_radio',
-            'rec_pid_power_radio', 'rec_corrected_direct_power_radio'
+            'corrected_direct_power_radio'
         ]
         for name in radio_button_names:
             widget = getattr(self, name, None)
@@ -2066,6 +2233,12 @@ class DataCollectionUI:
         # Other buttons' states will be set by _handle_control_mode_change based on actual connection.
         self.start_button.config(state=controls_state)
         self.connect_button.config(state=tk.DISABLED if is_connected else tk.NORMAL)
+
+        # Port/address entries state
+        port_combobox_state = tk.DISABLED if is_connected else 'readonly'
+        self.arduino_port_combobox.config(state=port_combobox_state)
+        self.voltage_meter_address_combobox.config(state=port_combobox_state)
+        self.current_meter_address_combobox.config(state=port_combobox_state)
         
         self._handle_control_mode_change() # Refresh states of live control panels
 
@@ -2099,6 +2272,7 @@ class DataCollectionUI:
         self.master.destroy()
 
 if __name__ == "__main__":
+    print("Start")
     root = tk.Tk()
     app = DataCollectionUI(root)
     root.mainloop()
