@@ -5,6 +5,7 @@ import threading
 import os
 import numpy as np # Make sure numpy is imported
 import matplotlib.pyplot as plt
+import pandas as pd
 
 import pyvisa # For specific VISA error handling
 import control_meter as cm
@@ -72,7 +73,6 @@ class MockControlMeter:
         voltage = self.read_voltage()[0]
         current = voltage / self.simulated_resistance
         return [current + np.random.normal(0, 0.01)]
-
 # --- End Mock/Debug Classes ---
 
 # --- PID Controller Class ---
@@ -205,7 +205,7 @@ class DataCollectionUI:
     def __init__(self, master):
         self.master = master
         master.title("Data Collection UI")
-        master.geometry("1600x800") # Corrected geometry string
+        master.geometry("1600x765") # Corrected geometry string
         master.resizable(False, False) # Make the window not resizable
 
         # --- Instance Variables ---
@@ -303,6 +303,7 @@ class DataCollectionUI:
         self.right_column_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 10), pady=10)
         self.right_column_frame.pack_propagate(False) # Prevent children from resizing this frame
 
+        self._setup_status_bar() # Moved here to ensure status_label is initialized early
         # --- Setup UI ---
         # Left Column
         self._setup_connection_controls()
@@ -320,10 +321,9 @@ class DataCollectionUI:
         self._setup_action_controls()
         self._setup_timer_display()
         self._setup_emergency_stop_controls() # Moved to be part of the right column, after timer
-        self._setup_status_bar() # Moved here, to be below emergency stop in the right column
 
         # Bottom (Spanning)
-        # self._setup_status_bar() # Removed from here
+        #self._setup_status_bar() # Removed from here
 
         self.reset_realtime_display() # Initialize display fields
         master.protocol("WM_DELETE_WINDOW", self.on_closing) # Handle window close event
@@ -381,7 +381,6 @@ class DataCollectionUI:
         if not available_visa_resources: # If list is still empty
             available_visa_resources = ["No VISA resources"]
 
-        # Arduino Port
         # Voltage Meter Address
         ttk.Label(self.connection_frame, text="Voltage Meter:").grid(row=1, column=0, padx=5, pady=2, sticky=tk.W)
         self.voltage_meter_address_combobox = ttk.Combobox(self.connection_frame, textvariable=self.voltage_meter_address_var,
@@ -392,13 +391,17 @@ class DataCollectionUI:
         self.current_meter_address_combobox = ttk.Combobox(self.connection_frame, textvariable=self.current_meter_address_var,
                                                           values=available_visa_resources, width=18, state='readonly')
         self.current_meter_address_combobox.grid(row=2, column=1, padx=5, pady=2, sticky=tk.EW)
+
+        # Refresh Button
+        self.refresh_button = tk.Button(self.connection_frame, text="Refresh Devices", command=self._refresh_device_lists)
+        self.refresh_button.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
         # Connect Button
-        self.connect_button = tk.Button(self.connection_frame, text="Connect Devices", command=self.connect_devices)
-        self.connect_button.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+        self.connect_button = tk.Button(self.connection_frame, text="Connect Devices", command=self.connect_devices, state=tk.NORMAL)
+        self.connect_button.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
 
         # Debug Mode Checkbox
-        self.debug_mode_checkbox = ttk.Checkbutton(self.connection_frame, text="Debug Mode (No Hardware)", variable=self.debug_mode_var)
-        self.debug_mode_checkbox.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        self.debug_mode_checkbox = ttk.Checkbutton(self.connection_frame, text="Debug Mode (No Hardware)", variable=self.debug_mode_var, state=tk.NORMAL)
+        self.debug_mode_checkbox.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
 
         self.connection_frame.grid_columnconfigure(1, weight=1) # Allow entry fields to expand
 
@@ -482,9 +485,9 @@ class DataCollectionUI:
         self.pwm_frame.grid_columnconfigure(0, weight=0) # Label column
         self.pwm_frame.grid_columnconfigure(1, weight=0) # Entry/Button column
         self.pwm_frame.grid_columnconfigure(2, weight=0) # Range Label/Button column
-        self.pwm_frame.grid_columnconfigure(3, weight=1) # Button column
-        self.pwm_frame.grid_columnconfigure(4, weight=1) # Button column (for Set to 0%)
-        self.pwm_frame.grid_columnconfigure(4, weight=1) # Button column
+        self.pwm_frame.grid_columnconfigure(3, weight=1) # Button column (Set PWM)
+        self.pwm_frame.grid_columnconfigure(4, weight=1) # Button column (Set to 0%)
+        self.pwm_frame.grid_columnconfigure(5, weight=1) # Button column (Set to 100%)
 
 
     def _setup_pid_controls(self):
@@ -651,13 +654,14 @@ class DataCollectionUI:
 
     def _setup_status_bar(self):
         """Sets up the status bar at the bottom of the UI."""
-        # Parent is now self.right_column_frame, to be placed below other elements in this frame.
+        # The parent is self.right_column_frame.
         self.status_label = tk.Label(self.right_column_frame, text="Status: Disconnected",
                                      relief=tk.SUNKEN, anchor=tk.W,
-                                     wraplength=230,  # Adjusted for narrower column
-                                     justify=tk.LEFT)
-        # Pack it at the top of the remaining space in right_column_frame, below emergency_stop
-        self.status_label.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(5, 10))
+                                     wraplength=230,  # Wraps text to prevent horizontal expansion
+                                     justify=tk.LEFT,
+                                     height=6)  # Fix height to 2 lines
+        # Pack it at the bottom of the right_column_frame.
+        self.status_label.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=(5, 10))
         
     def _setup_emergency_stop_controls(self):
         """Sets up the Emergency Stop button."""
@@ -666,6 +670,44 @@ class DataCollectionUI:
         self.emergency_stop_button = tk.Button(self.emergency_stop_frame, text="EMERGENCY STOP", command=self.emergency_stop,
                                                bg="red", fg="white", font=("Helvetica", 10, "bold"), state=tk.DISABLED)
         self.emergency_stop_button.pack(fill=tk.X, expand=True, ipady=5)
+        self._refresh_device_lists() # Initial scan on startup
+
+    def _refresh_device_lists(self):
+        """Scans for available COM ports and VISA resources and updates the comboboxes."""
+        self.update_status("Scanning for available devices...")
+
+        # --- Scan for Arduino COM Ports ---
+        available_com_ports = [port.device for port in serial.tools.list_ports.comports()]
+        if not available_com_ports:
+            available_com_ports = ["No COM ports found"]
+        self.arduino_port_combobox['values'] = available_com_ports
+        if self.arduino_port_var.get() not in available_com_ports:
+            self.arduino_port_var.set(available_com_ports[0])
+
+        # --- Scan for VISA Resources ---
+        available_visa_resources = []
+        try:
+            rm = pyvisa.ResourceManager()
+            resources = rm.list_resources()
+            # Ensure resources is a list-like object before converting
+            available_visa_resources = list(resources) if resources else []
+            rm.close()
+        except Exception as e:
+            print(f"Error listing VISA resources: {e}")
+            available_visa_resources = ["VISA Error"]
+
+        if not available_visa_resources:
+            available_visa_resources = ["No VISA resources found"]
+
+        self.voltage_meter_address_combobox['values'] = available_visa_resources
+        self.current_meter_address_combobox['values'] = available_visa_resources
+
+        if self.voltage_meter_address_var.get() not in available_visa_resources:
+            self.voltage_meter_address_var.set(available_visa_resources[0])
+        if self.current_meter_address_var.get() not in available_visa_resources:
+            self.current_meter_address_var.set(available_visa_resources[0])
+
+        self.update_status("Device lists refreshed. Ready to connect.")
 
     # --- Control Mode Logic ---
     def _handle_control_mode_change(self, event=None): # For Live Controls
@@ -922,6 +964,7 @@ class DataCollectionUI:
                 self.emergency_stop_button.config(state=tk.NORMAL)
                 self.start_button.config(state=tk.NORMAL)
                 self.connect_button.config(state=tk.DISABLED)
+                self.refresh_button.config(state=tk.DISABLED)
                 # Disable port/address entries
                 self.arduino_port_combobox.config(state=tk.DISABLED)
                 self.voltage_meter_address_combobox.config(state=tk.DISABLED)
@@ -935,6 +978,7 @@ class DataCollectionUI:
                 # Reset UI to disconnected state
                 self.start_button.config(state=tk.DISABLED)
                 self.connect_button.config(state=tk.NORMAL)
+                self.refresh_button.config(state=tk.NORMAL)
                 self.arduino_port_combobox.config(state='readonly')
                 self.voltage_meter_address_combobox.config(state='readonly')
                 self.current_meter_address_combobox.config(state='readonly')
@@ -1047,6 +1091,7 @@ class DataCollectionUI:
 
                 self.start_button.config(state=tk.NORMAL)
                 self.connect_button.config(state=tk.DISABLED)
+                self.refresh_button.config(state=tk.DISABLED)
                 # Disable port/address entries
                 self.arduino_port_combobox.config(state=tk.DISABLED)
                 self.voltage_meter_address_combobox.config(state=tk.DISABLED)
@@ -1064,6 +1109,7 @@ class DataCollectionUI:
                 self.emergency_stop_button.config(state=tk.DISABLED) # Disable E-Stop
                 # self.load_tr_file_button.config(state=tk.DISABLED) # Removed
                 # Equation parameter entries are disabled by _handle_control_mode_change
+                self.refresh_button.config(state=tk.NORMAL) # Allow refresh on failure
                 self.connect_button.config(state=tk.NORMAL) # Allow retry
                 # Ensure port/address entries are enabled on failure (close_devices should handle this)
                 self.arduino_port_combobox.config(state='readonly') # Re-enable to readonly
@@ -1730,54 +1776,76 @@ class DataCollectionUI:
 
     def stop_recording(self):
         """Stops the data recording process, saves data, and resets UI state."""
-        # print("[UI] stop_recording called") # Debug
-        self.recording = False # Signal threads to stop
-        # print(f"[UI] self.recording set to {self.recording}") # Debug
+        if not self.recording: # Prevent multiple clicks if already stopping
+            return
 
+        # Disable button immediately and update status to give user feedback
+        self.stop_button.config(state=tk.DISABLED)
+        self.update_status("Stopping recording, please wait for data processing...")
+
+        # Run the blocking parts (joining thread, saving, plotting) in a separate thread
+        stop_thread = threading.Thread(target=self._threaded_stop_and_save, daemon=True)
+        stop_thread.start()
+
+    def _threaded_stop_and_save(self):
+        """Handles the blocking tasks of stopping recording, saving, and plotting in a worker thread."""
+        # 1. Signal data collection thread to stop
+        self.recording = False
+
+        # 2. Wait for the data collection thread to finish its current cycle and exit
         if self.data_collection_thread and self.data_collection_thread.is_alive():
-            self.update_status("Stopping recording, please wait for data processing...")
-            # print("[UI] Attempting to join data_collection_thread...") # Debug
-            self.data_collection_thread.join(timeout=10.0) # Wait for data collection to finish, with a 10-second timeout
+            self.data_collection_thread.join(timeout=10.0)
             if self.data_collection_thread.is_alive():
-                print("[UI] WARNING: Data collection thread did not terminate in time after stopping!") # Should ideally not happen
-            # else: # Debug
-                # print("[UI] Data collection thread joined successfully.") # Debug
-        
-        # UI timer thread is daemon, will stop.
+                print("[UI] WARNING: Data collection thread did not terminate in time after stopping!")
 
+        # 3. Save and plot data. This is a blocking operation (especially plt.show()).
+        if self.data:
+            try:
+                # First, save the data to CSV. This function returns the filename.
+                filename = self._save_data_to_csv()
+                # Schedule a UI update to show the user the file has been saved, before showing the plot.
+                self.master.after(0, self.update_status, f"Data saved to {filename}. Generating plot...")
+
+                # Second, generate and show the plot. This is a blocking call.
+                self._plot_data()
+                final_status = "Data saved and plotted. Ready for new recording or disconnect."
+            except Exception as e:
+                error_msg = f"Error during saving or plotting: {e}"
+                # Schedule an error message display on the main thread
+                self.master.after(0, self.update_status, error_msg)
+                self.master.after(0, messagebox.showerror, "Save/Plot Error", error_msg)
+                final_status = "An error occurred. Check console for details."
+        else:
+            final_status = "Recording stopped. No data collected."
+
+        # 4. When all blocking tasks are done, schedule the final UI update on the main thread.
+        self.master.after(0, self._finalize_stop_recording, final_status)
+
+    def _finalize_stop_recording(self, final_status):
+        """Updates the UI on the main thread after the stop-and-save thread is complete."""
+        self.update_status(final_status)
+
+        # UI timer thread is a daemon and will stop automatically.
         # Restart pre-recording display if devices are still connected
-        if self.arduino and self.arduino.running: 
+        is_connected = self.arduino and self.arduino.running
+        if is_connected:
             self.stop_pre_recording_display_event.clear()
             if not (self.pre_recording_display_thread and self.pre_recording_display_thread.is_alive()):
                 self.pre_recording_display_thread = threading.Thread(target=self.run_pre_recording_display_loop, daemon=True)
                 self.pre_recording_display_thread.start()
-
-        # print("[UI] Proceeding after join attempt.") # Debug
-        self.start_button.config(state=tk.NORMAL)
-        self.stop_button.config(state=tk.DISABLED)
-        self.steak_type_entry.config(state=tk.NORMAL) # Re-enable steak type entry
-        self.flip_button.config(state=tk.DISABLED) # Disable flip button after recording
-        self.connect_button.config(state=tk.NORMAL if not (self.voltage_meter and self.current_meter and self.arduino) else tk.DISABLED)
-
-        if self.data:
-            self.update_status("Recording stopped. Saving and plotting data...")
-            self.save_and_plot_data()
-            self.update_status(f"Data saved and plotted. Ready for new recording or disconnect.")
         else:
-            self.update_status("Recording stopped. No data collected.")
-        
-        if not (self.arduino and self.arduino.running): # If Arduino died or was disconnected
             self.reset_realtime_display()
 
-        # Re-enable connect button if devices are connected, otherwise it should stay as is.
-        if self.voltage_meter and self.current_meter and self.arduino:
-             self.connect_button.config(state=tk.DISABLED) # Still connected
-             # Keep port entries disabled
-             self.arduino_port_combobox.config(state=tk.DISABLED)
-             self.voltage_meter_address_combobox.config(state=tk.DISABLED)
-             self.current_meter_address_combobox.config(state=tk.DISABLED)
-        else:
-             self.connect_button.config(state=tk.NORMAL) # Not connected, allow reconnect
+        # Reset UI state
+        self.start_button.config(state=tk.NORMAL)
+        self.steak_type_entry.config(state=tk.NORMAL)
+        self.flip_button.config(state=tk.DISABLED)
+        self.connect_button.config(state=tk.DISABLED if is_connected else tk.NORMAL)
+
+        port_combobox_state = tk.DISABLED if is_connected else 'readonly'
+        self.arduino_port_combobox.config(state=port_combobox_state)
+        self.voltage_meter_address_combobox.config(state=port_combobox_state)
+        self.current_meter_address_combobox.config(state=port_combobox_state)
 
     def run_ui_timer(self):
         """Thread loop to update the elapsed time label every second during recording."""
@@ -1907,114 +1975,94 @@ class DataCollectionUI:
         # print(f"[DCL] Loop finished. self.recording = {self.recording}") # Debug
         self.update_status("Data collection thread finished.")
 
-    def save_and_plot_data(self):
+    def _save_data_to_csv(self):
         """
-        Saves the collected data to a CSV file and generates plots.
-        Filename includes timestamp, steak type, duration, and average power.
+        Saves the collected data to a CSV file.
+        This method is designed to be called from a worker thread.
+        It raises exceptions on failure and returns the filename on success.
         """
         if not self.data:
-            self.update_status("No data to save.")
-            return
+            raise ValueError("No data to save.")
 
         data_np = np.array(self.data)
-        if data_np.shape[0] == 0 or data_np.shape[1] < 9: # Check for expected number of columns
-            self.update_status("No data to save after numpy conversion.")
-            return
+        if data_np.shape[0] == 0 or data_np.shape[1] < 9:
+            raise ValueError("No data to save after numpy conversion.")
 
         # Calculate average power for the filename
         try:
-            # Voltage is at index 1, Current is at index 2
             average_power = np.nanmean(data_np[:, 1].astype(float) * data_np[:, 2].astype(float))
         except (IndexError, ValueError) as e:
             print(f"Could not calculate average power for filename: {e}")
-            average_power = 0.0 # Default if calculation fails
+            average_power = 0.0
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        
-        # Define subdirectory for saving data
-        directory = "data_collection/data" 
+        directory = "data_collection/data"
         if not os.path.exists(directory):
             os.makedirs(directory)
         filename_base = f"{timestamp}_{self.steak_type_var.get()}_{self.elapsed_time}S_{average_power:.2f}W.csv"
         filename = os.path.join(directory, filename_base)
-        
-        try:
-            # Prepare data for saving, including flip events
-            header = "Time,voltage,current,TH,Ttest,TM_1,TM_2,TM_3,Control_Mode,FlipEvent"
-            
-            # Create a new column for flip events, initialized to 0
-            flip_column = np.zeros((data_np.shape[0], 1))
-            
-            # Mark flip events in the new column
-            # Convert recorded flip times (which are elapsed_time) to approximate row indices
-            # This assumes self.sample_interval is the time step for each row in data_np
-            if self.flip_event_times:
-                time_column_float = data_np[:, 0].astype(float)
-                for t_flip in self.flip_event_times:
-                    # Find the closest row index for the flip time
-                    # This can be tricky if sample_interval isn't perfectly regular or if t_flip doesn't align
-                    # A more robust way is to find the index where data_np[:, 0] is closest to t_flip
-                    try:
-                        # Find the index of the time value closest to t_flip
-                        closest_time_index = np.abs(time_column_float - t_flip).argmin()
-                        flip_column[closest_time_index, 0] = 1 # Mark as 1 for flip
-                    except IndexError:
-                        print(f"Warning: Could not accurately map flip time {t_flip}s to data row.")
-            
-            # Concatenate the flip column to the main data
-            data_to_save = np.concatenate((data_np, flip_column), axis=1)
-            
-            # Define custom format for columns, ensuring Control_Mode is string and FlipEvent is integer
-            # Original 8 columns (Time, V, I, T1-T5) are float, Control_Mode is string, FlipEvent is int
-            # We need to handle the string column. np.savetxt is not ideal for mixed types.
-            # Using pandas DataFrame to_csv is more robust for mixed types.
-            import pandas as pd
-            df_to_save = pd.DataFrame(data_to_save, columns=header.split(','))
-            df_to_save['FlipEvent'] = df_to_save['FlipEvent'].astype(float).astype(int) # Ensure FlipEvent is int
 
-            df_to_save.to_csv(filename, index=False, float_format='%.5f')
-            self.update_status(f"Data (including flips) saved to {filename}")
-
-            # Plotting (using data_np for numerical plotting, as it's already numerical)
-            # Ensure data_np is converted to float for plotting if it contains strings
-            data_for_plot = data_np[:, :8].astype(float) # Take only numerical columns for plotting
-
-            plt.figure(figsize=(12, 9)) # Adjusted figure size
-
-            plt.subplot(2, 1, 1)
-            plt.plot(data_for_plot[:, 0], data_for_plot[:, 1], label="Voltage (V)")
-            plt.plot(data_for_plot[:, 0], data_for_plot[:, 2] * 10, label="Current (A x10)") # Assuming current is multiplied by 10 for plotting
-            plt.plot(data_for_plot[:, 0], np.multiply(data_for_plot[:, 1], data_for_plot[:, 2]), label="Power (W)")
-            plt.xlabel("Time (s)")
-            plt.ylabel("Value")
-            plt.title("Voltage, Current, and Power")
-            plt.legend()
-            plt.grid(True)
-            # Add vertical lines for flip events
+        header = "Time,voltage,current,TH,Ttest,TM_1,TM_2,TM_3,Control_Mode,FlipEvent"
+        flip_column = np.zeros((data_np.shape[0], 1))
+        if self.flip_event_times:
+            time_column_float = data_np[:, 0].astype(float)
             for t_flip in self.flip_event_times:
-                plt.axvline(x=t_flip, color='r', linestyle='--', linewidth=0.8, label='Flip' if t_flip == self.flip_event_times[0] else None)
+                try:
+                    closest_time_index = np.abs(time_column_float - t_flip).argmin()
+                    flip_column[closest_time_index, 0] = 1
+                except IndexError:
+                    print(f"Warning: Could not accurately map flip time {t_flip}s to data row.")
 
-            plt.subplot(2, 1, 2)
-            plt.plot(data_for_plot[:, 0], data_for_plot[:, 3], label="TH (°C)")
-            plt.plot(data_for_plot[:, 0], data_for_plot[:, 4], label="Ttest (°C)")
-            plt.plot(data_for_plot[:, 0], data_for_plot[:, 5], label="TM_1 (°C)")
-            plt.plot(data_for_plot[:, 0], data_for_plot[:, 6], label="TM_2 (°C)")
-            plt.plot(data_for_plot[:, 0], data_for_plot[:, 7], label="TM_3 (°C)")
-            plt.xlabel("Time (s)")
-            plt.ylabel("Temperature (°C)")
-            plt.title("Temperatures")
-            plt.legend()
-            plt.grid(True)
-            for t_flip in self.flip_event_times:
-                plt.axvline(x=t_flip, color='r', linestyle='--', linewidth=0.8, label='Flip' if t_flip == self.flip_event_times[0] else None)
+        data_to_save = np.concatenate((data_np, flip_column), axis=1)
+        df_to_save = pd.DataFrame(data_to_save, columns=header.split(','))
+        df_to_save['FlipEvent'] = df_to_save['FlipEvent'].astype(float).astype(int)
 
-            plt.tight_layout()
-            plt.show() # This will block until the plot window is closed.
-        except Exception as e:
-            error_msg = f"Error during saving or plotting: {e}"
-            self.update_status(error_msg)
-            messagebox.showerror("Save/Plot Error", error_msg)
+        df_to_save.to_csv(filename, index=False, float_format='%.5f')
+        return filename
 
+    def _plot_data(self):
+        """
+        Generates and displays plots from the collected data.
+        This method is designed to be called from a worker thread and contains the blocking plt.show().
+        """
+        if not self.data:
+            return
+
+        data_np = np.array(self.data)
+        # Ensure data_np is converted to float for plotting if it contains strings
+        data_for_plot = data_np[:, :8].astype(float) # Take only numerical columns for plotting
+
+        plt.figure(figsize=(12, 9)) # Adjusted figure size
+
+        plt.subplot(2, 1, 1)
+        plt.plot(data_for_plot[:, 0], data_for_plot[:, 1], label="Voltage (V)")
+        plt.plot(data_for_plot[:, 0], data_for_plot[:, 2] * 10, label="Current (A x10)") # Assuming current is multiplied by 10 for plotting
+        plt.plot(data_for_plot[:, 0], np.multiply(data_for_plot[:, 1], data_for_plot[:, 2]), label="Power (W)")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Value")
+        plt.title("Voltage, Current, and Power")
+        plt.legend()
+        plt.grid(True)
+        # Add vertical lines for flip events
+        for t_flip in self.flip_event_times:
+            plt.axvline(x=t_flip, color='r', linestyle='--', linewidth=0.8, label='Flip' if t_flip == self.flip_event_times[0] else None)
+
+        plt.subplot(2, 1, 2)
+        plt.plot(data_for_plot[:, 0], data_for_plot[:, 3], label="TH (°C)")
+        plt.plot(data_for_plot[:, 0], data_for_plot[:, 4], label="Ttest (°C)")
+        plt.plot(data_for_plot[:, 0], data_for_plot[:, 5], label="TM_1 (°C)")
+        plt.plot(data_for_plot[:, 0], data_for_plot[:, 6], label="TM_2 (°C)")
+        plt.plot(data_for_plot[:, 0], data_for_plot[:, 7], label="TM_3 (°C)")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Temperature (°C)")
+        plt.title("Temperatures")
+        plt.legend()
+        plt.grid(True)
+        for t_flip in self.flip_event_times:
+            plt.axvline(x=t_flip, color='r', linestyle='--', linewidth=0.8, label='Flip' if t_flip == self.flip_event_times[0] else None)
+
+        plt.tight_layout()
+        plt.show() # This will block until the plot window is closed.
 
     def close_devices(self):
         """
@@ -2094,6 +2142,7 @@ class DataCollectionUI:
         # Re-enable port/address entries as devices are closed
         self.arduino_port_combobox.config(state='readonly')
         self.voltage_meter_address_combobox.config(state='readonly')
+        self.refresh_button.config(state=tk.NORMAL) # Re-enable refresh button
         self.current_meter_address_combobox.config(state='readonly')
         self.connect_button.config(state=tk.NORMAL) # Re-enable connect button
         self._handle_control_mode_change() # This will disable all specific controls based on new default
@@ -2233,6 +2282,7 @@ class DataCollectionUI:
         # Other buttons' states will be set by _handle_control_mode_change based on actual connection.
         self.start_button.config(state=controls_state)
         self.connect_button.config(state=tk.DISABLED if is_connected else tk.NORMAL)
+        self.refresh_button.config(state=tk.DISABLED if is_connected else tk.NORMAL)
 
         # Port/address entries state
         port_combobox_state = tk.DISABLED if is_connected else 'readonly'

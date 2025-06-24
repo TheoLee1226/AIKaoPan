@@ -1,5 +1,6 @@
 PINN_PDE_output_20250201-231645/
 *.zip
+.vscode
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
